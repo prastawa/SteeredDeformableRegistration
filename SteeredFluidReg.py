@@ -6,6 +6,7 @@ import math
 import threading
 import SimpleITK as sitk
 import sitkUtils
+import Queue
 
 #
 # SteeredFluidReg
@@ -238,10 +239,10 @@ class SteeredFluidRegWidget:
 
     # to support quicker development:
     import os
-    if (os.getenv('USERNAME') == '200009249') or (os.getenv('USER') == 'dirkpadfield'):
+    if (os.getenv('USERNAME') == '212357326') or (os.getenv('USER') == 'prastawa'):
       self.logic.testingData()
-      self.fixedSelector.setCurrentNode(slicer.util.getNode('MRHead'))
-      self.movingSelector.setCurrentNode(slicer.util.getNode('neutral'))
+      self.fixedSelector.setCurrentNode(slicer.util.getNode('testbrain1'))
+      self.movingSelector.setCurrentNode(slicer.util.getNode('testbrain2'))
       # self.transformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
       # self.initialTransformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
 
@@ -265,6 +266,7 @@ class SteeredFluidRegWidget:
     # TODO: set momentas to zero, copy moving to output
    
   def onStart(self,checked):
+    
     if checked:
       self.regButton.text = "Stop"
       
@@ -272,24 +274,78 @@ class SteeredFluidRegWidget:
       fixedVolume = self.fixedSelector.currentNode()
       movingVolume = self.movingSelector.currentNode()
       outputVolume = self.outputSelector.currentNode()
+
+      cool1 = slicer.vtkMRMLColorTableNode()
+      cool1.SetTypeToCool1()
+      fixedVolume.GetScene().AddNode(cool1)
+
+      warm1 = slicer.vtkMRMLColorTableNode()
+      warm1.SetTypeToWarm1()
+      movingVolume.GetScene().AddNode(warm1)
+
+      fixedDisplay = fixedVolume.GetDisplayNode()
+      fixedDisplay.SetAndObserveColorNodeID(cool1.GetID())
+
+      movingDisplay = movingVolume.GetDisplayNode()
+      movingDisplay.SetAndObserveColorNodeID(warm1.GetID())
       
       if outputVolume is None:
         vl = slicer.modules.volumes.logic()
         outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
         self.outputSelector.setCurrentNode(outputVolume)
       else:
+        # Disabled to allow pausing and unpausing
         # TODO DEBUG
-        movingArray = slicer.util.array(movingVolume.GetName())
-        outputArray = slicer.util.array(outputVolume.GetName())
-        outputArray[:] = movingArray[:]
+        #movingArray = slicer.util.array(movingVolume.GetName())
+        #outputArray = slicer.util.array(outputVolume.GetName())
+        #outputArray[:] = movingArray[:]
+        pass
         
+      # Force update of gradient magnitude image
+      self.updateOutputVolume( outputVolume.GetImageData() )
+      
+      vl = slicer.modules.volumes.logic()
+      self.gridVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "warped-grid")
+      self.gridVolume = slicer.vtkMRMLScalarVolumeNode()
+      self.gridVolume.CopyWithScene(movingVolume)
+      self.gridVolume.SetAndObserveStorageNodeID(None)
+      self.gridVolume.Modified()
+      self.gridVolume.LabelMapOn()
+      # self.gridVolume.SetAndObserveColorNodeID("vtkMRMLColorTableNodeLabels")
+      self.gridVolume.SetName("warped-grid")
+      
+      print "Grid volume id = " + str(self.gridVolume.GetID())
+  
+      gridImage = self.buildGrid(movingVolume.GetImageData())
+      #self.gridVolume.GetImageData().GetPointData().SetScalars( gridImage.GetPointData().GetScalars() )
+      self.gridVolume.SetAndObserveImageData(gridImage)
+        
+      ii = 0
+      
       compositeNodes = slicer.util.getNodes('vtkMRMLSliceCompositeNode*')
       for compositeNode in compositeNodes.values():
+        print "Composite node " + compositeNode.GetName()
+        #compositeNode.SetLabelVolumeID(self.gridVolume.GetID())
         compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
         compositeNode.SetForegroundVolumeID(outputVolume.GetID())
+        #compositeNode.SetForegroundVolumeID(self.gridVolume.GetID())
+        
         # TODO DEBUG
         #compositeNode.SetForegroundOpacity(1.0)
         compositeNode.SetForegroundOpacity(0.5)
+        if ii == 1:
+          compositeNode.SetForegroundOpacity(0.0)
+        if ii == 0:
+          compositeNode.SetForegroundOpacity(1.0)
+        compositeNode.SetLabelOpacity(0.5)
+        
+        ii += 1
+        
+      # Set all view orientation to axial
+      sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
+      for nodeIndex in xrange(sliceNodeCount):
+        sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
+        sliceNode.SetOrientationToAxial()
         
       applicationLogic = slicer.app.applicationLogic()
       applicationLogic.FitSliceToAll()
@@ -314,6 +370,22 @@ class SteeredFluidRegWidget:
       self.logic.automaticRegistration = False
       print('Automatic registration = %d' %(self.logic.automaticRegistration))
     
+  def updateOutputVolume(self, outputImage):
+  
+    outputVolume = self.outputSelector.currentNode()  
+    outputVolume.GetImageData().GetPointData().SetScalars( outputImage.GetPointData().GetScalars() )
+    outputVolume.GetImageData().GetPointData().GetScalars().Modified()
+    outputVolume.GetImageData().Modified()
+    outputVolume.Modified()
+    
+    gmagf = vtk.vtkImageGradientMagnitude()
+    gmagf.SetDimensionality(3)
+    gmagf.HandleBoundariesOn()
+    gmagf.SetInput(outputImage)
+    gmagf.Update()
+    
+    self.outputGradientMag = self.normalizeImage( gmagf.GetOutput() )
+
     
   def startDeformableRegistration(self):     
     fixedVolume = self.fixedSelector.currentNode()
@@ -321,6 +393,8 @@ class SteeredFluidRegWidget:
     #outputVolume = self.outputSelector.currentNode()
     # initialTransform = self.initialTransformSelector.currentNode()
     # outputTransform = self.transformSelector.currentNode()
+ 
+    vl = slicer.modules.volumes.logic()
     
     #TODO: clone output to moving
 
@@ -352,6 +426,9 @@ class SteeredFluidRegWidget:
     momentaZ.DeepCopy(momentaX)
     
     self.momentas = [momentaX, momentaY, momentaZ]
+    
+    # TODO
+    #self.deformation = self.buildIdentity(movingVolume.GetImageData)
 
     print('registration begin')
     print "return result every %d iterations" %(self.regIterationSlider.value)
@@ -361,18 +438,22 @@ class SteeredFluidRegWidget:
     qt.QTimer.singleShot(self.interval, self.updateStep)       
 
   def updateStep(self):
+  
+    #TODO can updates clash?
+    self.threadLock.acquire()
+    
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registering iteration %d' %(self.registrationIterationNumber))
     
-    self.threadLock.acquire()
     self.fluidUpdate()
-    self.threadLock.release()
-
+   
     self.logic.redrawSlices()
 
     # Initiate another iteration of the registration algorithm.
     if self.logic.interaction:
-      qt.QTimer.singleShot(self.interval, self.updateStep)    
+      qt.QTimer.singleShot(self.interval, self.updateStep)
+      
+    self.threadLock.release()
 
   def fluidUpdate(self):
     #print('fluid update')
@@ -397,7 +478,7 @@ class SteeredFluidRegWidget:
     
     # HACK
     # TODO VTK filters sometimes do not work when inputs are not of double type
-    # TODO should do this in setup phase
+    # TODO should do this in setup phase, need to override MRML volume node
     fixcastf = vtk.vtkImageCast()
     fixcastf.SetOutputScalarTypeToDouble()
     fixcastf.SetInput(fixedImage)
@@ -434,12 +515,13 @@ class SteeredFluidRegWidget:
     gradf.SetInput(outputImage)
     gradf.Update()
     
+    gradImages = [None, None, None]
     for dim in xrange(3):
       extractf = vtk.vtkImageExtractComponents()
       extractf.SetComponents(dim)
       extractf.SetInput(gradf.GetOutput())
       extractf.Update()
-      self.momentas[dim] = extractf.GetOutput()
+      gradImages[dim] = extractf.GetOutput()
       
     subf = vtk.vtkImageMathematics()
     subf.SetOperationToSubtract()
@@ -453,7 +535,7 @@ class SteeredFluidRegWidget:
       mulf = vtk.vtkImageMathematics()
       mulf.SetOperationToMultiply()
       mulf.SetInput1(diffImage)
-      mulf.SetInput2(self.momentas[dim])
+      mulf.SetInput2(gradImages[dim])
       mulf.Update()
       self.momentas[dim] = mulf.GetOutput()
     
@@ -489,11 +571,15 @@ class SteeredFluidRegWidget:
                 
       forceVector = [0, 0, 0]
       forceCenter = [0, 0, 0]
+      forceMag = 0
       
       for dim in xrange(3):
         forceCenter[dim] = round(startIJK[dim])
         # TODO automatically determine magnitude from the gradient update (balanced?)
-        forceVector[dim] = (endRAS[dim] - startRAS[dim]) * 0.2
+        forceVector[dim] = (endRAS[dim] - startRAS[dim])
+        forceMag += forceVector[dim] ** 2
+        
+      forceMag = math.sqrt(forceMag)
 
       print "forceVector = " + str(forceVector)
                
@@ -511,12 +597,30 @@ class SteeredFluidRegWidget:
             pos[2] = forceCenter[2] + tk
             if pos[2] < 0 or pos[2] >= imageSize[2]:
               continue
-            print "set pos"
-            print pos
+            
+            # Find vector along grad that projects to the force vector described on the plane
+            gvec = [0, 0, 0]
+            gmag = 0
+            for dim in xrange(3):
+              gvec[dim] = gradImages[dim].GetScalarComponentAsDouble(pos[0], pos[1], pos[2], 0)
+              gmag += gvec[dim] ** 2
+            gmag = math.sqrt(gmag)
+            
+            if gmag == 0.0:
+              continue
+            
+            gdotf = 0
+            for dim in xrange(3):
+              gvec[dim] = gvec[dim] / gmag
+              gdotf += gvec[dim] * forceVector[dim]
+            
+            if gdotf == 0.0:
+              continue
+              
             for dim in xrange(3):
               a = self.momentas[dim].GetScalarComponentAsDouble(pos[0], pos[1], pos[2], 0)
               self.momentas[dim].SetScalarComponentFromDouble(pos[0], pos[1], pos[2], 0,
-                a + forceVector[dim])
+                a + gvec[dim] * forceMag**2 / gdotf)
              
       # for dim in xrange(3):
         # a = self.momentas[dim].GetScalarComponentAsDouble(forceCenter[0], forceCenter[1], forceCenter[2], 0)
@@ -596,14 +700,27 @@ class SteeredFluidRegWidget:
     reslice.SetNumberOfThreads(8)
     reslice.Update()
     
+    # greslice = vtk.vtkImageReslice()
+    # greslice.SetInput(self.gridVolume.GetImageData())
+    # greslice.SetResliceTransform(gridTrafo)
+    # greslice.SetInterpolationModeToNearestNeighbor()
+    # greslice.SetOutputDimensionality(3)
+    # greslice.SetOutputOrigin(fixedImage.GetOrigin())
+    # greslice.SetOutputSpacing(fixedImage.GetSpacing())
+    # greslice.SetOutputExtent(fixedImage.GetWholeExtent())
+    # greslice.SetNumberOfThreads(8)
+    # greslice.Update()
+    
     print "Resliced"
     
-    outputVolume.GetImageData().GetPointData().GetScalars().DeepCopy(
-      reslice.GetOutput().GetPointData().GetScalars() )
-    #outputVolume.GetImageData().GetPointData().SetScalars( reslice.GetOutput().GetPointData().GetScalars() )
-    outputVolume.GetImageData().GetPointData().GetScalars().Modified()
-    outputVolume.GetImageData().Modified()
-    outputVolume.Modified()
+    self.updateOutputVolume( reslice.GetOutput() )
+    
+    # self.gridVolume.GetImageData().GetPointData().SetScalars(
+      # greslice.GetOutput().GetPointData().GetScalars() )
+    # self.gridVolume.GetImageData().GetPointData().GetScalars().Modified()
+    # self.gridVolume.GetImageData().Modified()
+    # self.gridVolume.Modified()
+
      
 
   def getMinMax(self, inputImage):
@@ -735,7 +852,40 @@ class SteeredFluidRegWidget:
     normf.Update()
     
     return normf.GetOutput()
+    
+  def buildGrid(self, inputImage):
+    castf = vtk.vtkImageCast()
+    castf.SetOutputScalarTypeToUnsignedChar()
+    castf.SetInput(inputImage)
+    castf.Update()
 
+    gridImage = castf.GetOutput()
+    gridImage.GetPointData().GetScalars().FillComponent(0, 0)
+    
+    size = gridImage.GetDimensions()
+    
+    for i in xrange(size[0]):
+      for j in xrange(size[1]):
+        for k in xrange(size[2]):
+          if i > 0 and (i % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+
+    for j in xrange(size[1]):
+      for i in xrange(size[0]):
+        for k in xrange(size[2]):
+          if j > 0 and (j % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+            
+    for k in xrange(size[2]):
+      for i in xrange(size[0]):
+        for j in xrange(size[1]):
+          if k > 0 and (k % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+            
+    return gridImage
+            
+            
+            
   def composeDeformation(self, F, G):
     # TODO return F \circ G
     pass
@@ -784,11 +934,10 @@ class SteeredFluidRegWidget:
 class SteeredFluidRegLogic(object):
   """ Implement a template matching optimizer that is
   integrated with the slicer main loop.
-  Note: currently depends on numpy/scipy installation in mac system
   """
 
   def __init__(self,fixed=None,moving=None,transform=None):
-    self.interval = 10
+    self.interval = 1000
     self.timer = None
 
     # parameter defaults
@@ -835,6 +984,8 @@ class SteeredFluidRegLogic(object):
     
     self.lineActor = vtk.vtkActor2D()
     
+    self.lastHoveredGradMag = 0
+    
   def __del__(self):
   
     # TODO
@@ -873,7 +1024,7 @@ class SteeredFluidRegLogic(object):
         self.nodeIndexPerStyle[self.interactor] = nodeIndex
         self.sliceNodePerStyle[self.interactor] = sliceNode
         
-        events = ("LeftButtonPressEvent","LeftButtonReleaseEvent","MouseMoveEvent", "KeyPressEvent","EnterEvent", "LeaveEvent")
+        events = ( "LeftButtonPressEvent","LeftButtonReleaseEvent","MouseMoveEvent", "KeyPressEvent","EnterEvent", "LeaveEvent" )
         for event in events:
           tag = self.interactor.AddObserver(event, self.processEvent, 1.0)
           self.interactorObserverTags.append(tag)
@@ -881,6 +1032,8 @@ class SteeredFluidRegLogic(object):
 
 
   def processEvent(self,observee,event=None):
+  
+    from slicer import app
 
     if self.sliceWidgetsPerStyle.has_key(observee):
       sliceWidget = self.sliceWidgetsPerStyle[observee]
@@ -895,45 +1048,106 @@ class SteeredFluidRegLogic(object):
 
       self.lastDrawnSliceWidget = sliceWidget
   
-      if event == "LeftButtonPressEvent":
-        xy = style.GetInteractor().GetEventPosition()
-        xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-        ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
-
-        self.startEventPosition = ras
+      if event == "EnterEvent":
+        # TODO check interaction mode (eg tugging vs squishing)
+        cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+        app.setOverrideCursor(cursor)
         
-        self.actionState = "arrowStart"
+        self.actionState = "interacting"
         
-        self.arrowStartXY = xy
-        self.arrowStartRAS = ras
+        self.abortEvent(event)
 
-        #print(self.actionState)
+      elif event == "LeaveEvent":
+        
+        cursor = qt.QCursor(qt.Qt.ArrowCursor)
+        app.setOverrideCursor(cursor)
+        #app.restoreOverrideCursor()
+        
+        self.actionState = "idle"
+        
+        self.abortEvent(event)
+      
+      elif event == "LeftButtonPressEvent":
+      
+        if self.lastHoveredGradMag > 0.2:
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+        
+          xy = style.GetInteractor().GetEventPosition()
+          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+
+          self.startEventPosition = ras
+        
+          self.actionState = "arrowStart"
+        
+          self.arrowStartXY = xy
+          self.arrowStartRAS = ras
+        else:
+          self.actionState = "arrowReject"
+
         self.abortEvent(event)
 
       elif event == "LeftButtonReleaseEvent":
+      
+        if self.actionState == "arrowStart":
+          cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+          app.setOverrideCursor(cursor)
 
-        xy = style.GetInteractor().GetEventPosition()
-        xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-        ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+          xy = style.GetInteractor().GetEventPosition()
+          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
 
-        self.lastEventPosition = ras
+          self.lastEventPosition = ras
+
+          self.arrowEndXY = xy
+          self.arrowEndRAS = ras
+
+          # TODO: only draw arrow within ??? seconds
+          self.lastDrawMTime = sliceNode.GetMTime()
+          
+          self.lastDrawSliceWidget = sliceWidget
+
+          self.arrowQueue.put(
+            (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
+
+        self.actionState = "interacting"
         
-        self.actionState = "arrowEnd"
+        self.abortEvent(event)
 
-        self.arrowEndXY = xy
-        self.arrowEndRAS = ras
+      elif event == "MouseMoveEvent":
 
-        # TODO: only draw arrow within ??? seconds
-        self.lastDrawMTime = sliceNode.GetMTime()
-        
-        self.lastDrawSliceWidget = sliceWidget
+        if self.actionState == "interacting":
+          cursor = qt.QCursor(qt.Qt.ForbiddenCursor)
+          app.setOverrideCursor(cursor)
+          
+          xy = style.GetInteractor().GetEventPosition()
+          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+          
+          w = slicer.modules.SteeredFluidRegWidget
+          
+          movingRAStoIJK = vtk.vtkMatrix4x4()
+          w.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
+     
+          ijk = movingRAStoIJK.MultiplyPoint(ras + (1,))
+          
+          g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk[0]), round(ijk[1]), round(ijk[2]), 0)
+          if (g > 0.2):
+            cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+            app.setOverrideCursor(cursor)
+            
+          self.lastHoveredGradMag = g
 
-        self.arrowQueue.put(
-          (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
+        elif self.actionState == "arrowStart":
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+          
+        else:
+          pass
         
         
-        #print(self.actionState)
-        self.abortEvent(event)     
+        self.abortEvent(event)
           
       else:
         pass
@@ -982,44 +1196,135 @@ class SteeredFluidRegLogic(object):
         
     if not self.arrowQueue.empty():
     
+      numArrows = self.arrowQueue.qsize()
+    
       pts = vtk.vtkPoints()
       
       lines = vtk.vtkCellArray()
       
-      for i in xrange(self.arrowQueue.qsize()):
+      vectors = vtk.vtkDoubleArray()
+      vectors.SetNumberOfComponents(3)
+      vectors.SetNumberOfTuples(numArrows)
+      
+      xarray = vtk.vtkDoubleArray()
+      xarray.SetNumberOfComponents(1)
+      xarray.SetNumberOfTuples(numArrows)
+      xarray.SetName("X")
+      xarray.FillComponent(0, 0.0)
+      
+      yarray = vtk.vtkDoubleArray()
+      yarray.SetNumberOfComponents(1)
+      yarray.SetNumberOfTuples(numArrows)
+      yarray.SetName("Y")
+      yarray.FillComponent(0, 0.0)
+      
+      zarray = vtk.vtkDoubleArray()
+      zarray.SetNumberOfComponents(1)
+      zarray.SetNumberOfTuples(numArrows)
+      zarray.SetName("Z")
+      zarray.FillComponent(0, 0.0)
+
+      zeroes = vtk.vtkDoubleArray()
+      zeroes.SetNumberOfComponents(1)
+      zeroes.SetNumberOfTuples(numArrows)
+      zeroes.SetName("Zero")
+      zeroes.FillComponent(0, 0.0)
+      
+      for i in xrange(numArrows):
         arrowTuple = self.arrowQueue.queue[i]
         sliceWidget = arrowTuple[1]
         startXY = arrowTuple[2]
         endXY = arrowTuple[3]
+        startRAS = arrowTuple[4]
+        endRAS = arrowTuple[5]
 
         # TODO assume ortographic projection, no need for inv(camera)
         p = pts.InsertNextPoint(startXY + (0,))
-        q = pts.InsertNextPoint(endXY + (0,))
-      
-        line = vtk.vtkLine()
-        line.GetPointIds().SetId(0, p);
-        line.GetPointIds().SetId(1, q);
+        #q = pts.InsertNextPoint(endXY + (1,))
         
-        lines.InsertNextCell(line)
+        #p = pts.InsertNextPoint(startRAS)
+        
+        vectors.SetTuple3(i, endXY[0] - startXY[0], endXY[1] - startXY[1], 0.0)
+        #vectors.InsertNextTuple3(endRAS[0] - startRAS[0], endRAS[1] - startRAS[1], endRAS[2] - startRAS[2])
+        
+        # xarray.InsertNextTuple1(endRAS[0] - startRAS[0])
+        # yarray.InsertNextTuple1(endRAS[1] - startRAS[1])
+        # zarray.InsertNextTuple1(endRAS[2] - startRAS[2])
+        
+        xarray.SetTuple1(i, endXY[0] - startXY[0])
+        yarray.SetTuple1(i, endXY[1] - startXY[1])   
+      
+        # line = vtk.vtkLine()
+        # line.GetPointIds().SetId(0, p);
+        # line.GetPointIds().SetId(1, q);
+        
+        # lines.InsertNextCell(line)
       
       pd = vtk.vtkPolyData()
       pd.SetPoints(pts)
-      pd.SetLines(lines)
+      #pd.SetLines(lines)
+      pd.GetPointData().SetVectors(vectors)
+      #pd.GetPointData().AddArray(xarray)
+      #pd.GetPointData().AddArray(yarray)
+      #pd.GetPointData().AddArray(zarray)
+      
+      #scalarName = pd.GetPointData().GetScalars().GetName()
+      
+      scalarsToVectors = vtk.vtkFieldDataToAttributeDataFilter()
+      scalarsToVectors.SetInput(pd)
+      scalarsToVectors.SetInputFieldToPointDataField()
+      scalarsToVectors.SetOutputAttributeDataToPointData()
+      scalarsToVectors.SetVectorComponent(0, "X", 0)
+      scalarsToVectors.SetVectorComponent(1, "Y", 1)
+      scalarsToVectors.SetVectorComponent(2, "Z", 2)
+      scalarsToVectors.Update()
+      
+      a = vtk.vtkAssignAttribute()
+      a.SetInput(pd)
+      a.Assign(vtk.vtkDataSetAttributes.SCALARS, vtk.vtkDataSetAttributes.VECTORS, vtk.vtkAssignAttribute.POINT_DATA)
+      
+      arrowSource = vtk.vtkArrowSource()
+      
+      glyphSource = vtk.vtkGlyphSource2D()
+      glyphSource.SetGlyphTypeToEdgeArrow()
+      #glyphSource.SetScale(2.5)
+      #glyphSource.SetCenter(0, 0, 0)
+      glyphSource.FilledOn()
+      glyphSource.CrossOff()
+      glyphSource.Update()
+
+      glyphArrow = vtk.vtkGlyph2D()
+      #glyphArrow.SetInput(pd)
+      #glyphArrow.SetInput(a.GetOutput())
+      glyphArrow.SetInput(scalarsToVectors.GetOutput())
+      glyphArrow.SetSource(glyphSource.GetOutput())
+      #glyphArrow.SetSource(arrowSource.GetOutput())
+      glyphArrow.ClampingOff()
+      glyphArrow.ScalingOn()
+      glyphArrow.OrientOn()
+      glyphArrow.SetScaleFactor(0.2)
+      glyphArrow.SetVectorModeToUseVector()
+      glyphArrow.SetScaleModeToScaleByVector()
+      #glyphArrow.SetColorModeToColorByVector()
+      glyphArrow.SetIndexModeToOff()
+      glyphArrow.Update()
       
       mapper = vtk.vtkPolyDataMapper2D()
-      mapper.SetInput(pd)
+      #mapper.SetInput(pd)
+      mapper.SetInput(glyphArrow.GetOutput())
       
       self.lineActor.SetMapper(mapper)
-      self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])    
+      self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])
+      #self.lineActor.GetProperty().SetLineWidth(4.0)
       
+      # TODO add line actors to the appropriate widgets
+      # TODO make each renwin have two ren's from beginning
       renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
       rencol = renwin.GetRenderers()
       
       if rencol.GetNumberOfItems() == 2:
-        print "Old r2"
         renOverlay = rencol.GetItemAsObject(1)
       else:
-        print "New r2"
         renOverlay = vtk.vtkRenderer()
         renwin.SetNumberOfLayers(2)
         renwin.AddRenderer(renOverlay)
@@ -1035,31 +1340,41 @@ class SteeredFluidRegLogic(object):
     """Load some default data for development
     and set up a transform and viewing scenario for it.
     """
-    if not slicer.util.getNodes('MRHead*'):
+    # import SampleData
+    # sampleDataLogic = SampleData.SampleDataLogic()
+    # mrHead = sampleDataLogic.downloadMRHead()
+    # dtiBrain = sampleDataLogic.downloadDTIBrain()
+    
+    # w = slicer.modules.SteeredFluidRegWidget
+    # w.fixedSelector.setCurrentNode(mrHead)
+    # w.movingSelector.setCurrentNode(dtiBrain)
+    
+    if not slicer.util.getNodes('testbrain1*'):
       import os
-      fileName = "/home/src/NAMIC/MR-head.nrrd"
+      fileName = "C:\\Work\\testbrain1.nrrd"
       vl = slicer.modules.volumes.logic()
-      volumeNode = vl.AddArchetypeVolume(fileName, "MRHead", 0)
-    if not slicer.util.getNodes('neutral*'):
+      brain1Node = vl.AddArchetypeVolume(fileName, "testbrain1", 0)
+    if not slicer.util.getNodes('testbrain2*'):
       import os
-      fileName = "/home/src/NAMIC/helloPython/data/spgr.nhdr"
+      fileName = "C:\\Work\\testbrain2.nrrd"
       vl = slicer.modules.volumes.logic()
-      volumeNode = vl.AddArchetypeVolume(fileName, "neutral", 0)
-    if not slicer.util.getNodes('movingToFixed*'):
-      # Create transform node
-      transform = slicer.vtkMRMLLinearTransformNode()
-      transform.SetName('movingToFixed')
-      slicer.mrmlScene.AddNode(transform)
-    head = slicer.util.getNode('MRHead')
-    neutral = slicer.util.getNode('neutral')
-    transform = slicer.util.getNode('movingToFixed')
-    ###
-    # neutral.SetAndObserveTransformNodeID(transform.GetID())
-    ###
+      brain2Node = vl.AddArchetypeVolume(fileName, "testbrain2", 0)
+    # if not slicer.util.getNodes('movingToFixed*'):
+      # # Create transform node
+      # transform = slicer.vtkMRMLLinearTransformNode()
+      # transform.SetName('movingToFixed')
+      # slicer.mrmlScene.AddNode(transform)
+
+    # transform = slicer.util.getNode('movingToFixed')
+    
+    # ###
+    # # neutral.SetAndObserveTransformNodeID(transform.GetID())
+    # ###
+    
     compositeNodes = slicer.util.getNodes('vtkMRMLSliceCompositeNode*')
     for compositeNode in compositeNodes.values():
-      compositeNode.SetBackgroundVolumeID(head.GetID())
-      compositeNode.SetForegroundVolumeID(neutral.GetID())
+      compositeNode.SetBackgroundVolumeID(brain1Node.GetID())
+      compositeNode.SetForegroundVolumeID(brain2Node.GetID())
       compositeNode.SetForegroundOpacity(0.5)
     applicationLogic = slicer.app.applicationLogic()
     applicationLogic.FitSliceToAll()
