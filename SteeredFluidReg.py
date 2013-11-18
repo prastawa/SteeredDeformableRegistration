@@ -8,6 +8,17 @@ import SimpleITK as sitk
 import sitkUtils
 import Queue
 
+# TODO
+#
+# CL classes
+#
+
+# ImageCL
+# convolve, grad, add, mul, sub
+
+# DeformationCL
+# compose, warp/apply
+
 #
 # SteeredFluidReg
 #
@@ -262,8 +273,13 @@ class SteeredFluidRegWidget:
  
           
   def onResetButtonToggled(self):
-    self.logic.actionState = "identity"
-    # TODO: set momentas to zero, copy moving to output
+    self.logic.actionState = "reset"
+
+    # Set momentas to zero, copy moving to output
+    for dim in xrange(3):
+      self.displacement[dim].GetImageData().GetPointData().GetScalars().FillComponent(0, 0.0)
+    if outputVolume is not None:
+      outputVolume.GetImageData().GetPointData().SetScalars(movingVolume.GetImageData().GetPointData().GetScalars())
    
   def onStart(self,checked):
     
@@ -288,37 +304,93 @@ class SteeredFluidRegWidget:
 
       movingDisplay = movingVolume.GetDisplayNode()
       movingDisplay.SetAndObserveColorNodeID(warm1.GetID())
+
+      # TODO: DEBUG: cast images before processing?
+      # TODO: crashes, how to cast volume nodes?
+      #fixcastf = vtk.vtkImageCast()
+      #fixcastf.SetOutputScalarTypeToDouble()
+      #fixcastf.SetInput(fixedVolume.GetImageData())
+      #fixcastf.Update()
+      #fixedVolume.SetAndObserveImageData(self.normalizeImage( fixcastf.GetOutput() ) )
+      #fixedVolume.Modified()
+
+      #movcastf = vtk.vtkImageCast()
+      #movcastf.SetOutputScalarTypeToDouble()
+      #movcastf.SetInput(movingVolume.GetImageData())
+      #movcastf.Update()
+      #movingVolume.SetAndObserveImageData(self.normalizeImage( movcastf.GetOutput() ) )
+      #movingVolume.Modified()
+      
+      # NOTE: Reuse old result?
+      # TODO: need to store old deformation for this to work, for now reset everything
+      # if outputVolume is None:
+        # vl = slicer.modules.volumes.logic()
+        # outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
+        # self.outputSelector.setCurrentNode(outputVolume)
+      # else:
+        # # Disabled to allow pausing and unpausing
+        # # TODO DEBUG
+        # #movingArray = slicer.util.array(movingVolume.GetName())
+        # #outputArray = slicer.util.array(outputVolume.GetName())
+        # #outputArray[:] = movingArray[:]
+        # pass
       
       if outputVolume is None:
         vl = slicer.modules.volumes.logic()
         outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
         self.outputSelector.setCurrentNode(outputVolume)
       else:
-        # Disabled to allow pausing and unpausing
-        # TODO DEBUG
-        #movingArray = slicer.util.array(movingVolume.GetName())
-        #outputArray = slicer.util.array(outputVolume.GetName())
-        #outputArray[:] = movingArray[:]
-        pass
+        outputVolume.GetImageData().GetPointData().SetScalars(movingVolume.GetImageData().GetPointData().GetScalars())
+
+      # TODO DEBUG
+      # Propagate image information to image data structures?
+      #fixedVolume.GetImageData().SetOrigin( fixedVolume.GetOrigin() )
+      #fixedVolume.GetImageData().SetSpacing( fixedVolume.GetSpacing() )
+      #movingVolume.GetImageData().SetOrigin( movingVolume.GetOrigin() )
+      #movingVolume.GetImageData().SetSpacing( movingVolume.GetSpacing() )
+      #outputVolume.GetImageData().SetOrigin( outputVolume.GetOrigin() )
+      #outputVolume.GetImageData().SetSpacing( outputVolume.GetSpacing() )
+      
+      orig = movingVolume.GetImageData().GetOrigin()
+      sp = movingVolume.GetImageData().GetSpacing()
+      print "Call build id with orig = " + str(orig) + " sp = " + str(sp)
+
+      # TODO: move parts to startDeformableReg()
+      
+      self.identityMap = self.buildIdentity( movingVolume.GetImageData() )
+      
+      # Zero displacement
+      self.displacement = [None, None, None]
+      for dim in xrange(3):
+        castf = vtk.vtkImageCast()
+        castf.SetOutputScalarTypeToDouble()
+        castf.SetInput(movingVolume.GetImageData())
+        castf.Update()
+
+        disp = vtk.vtkImageData()
+        disp.DeepCopy( castf.GetOutput() )
+        disp.GetPointData().GetScalars().FillComponent(0, 0.0)
+        self.displacement[dim] = disp
+
         
       # Force update of gradient magnitude image
       self.updateOutputVolume( outputVolume.GetImageData() )
       
-      vl = slicer.modules.volumes.logic()
-      self.gridVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "warped-grid")
-      self.gridVolume = slicer.vtkMRMLScalarVolumeNode()
-      self.gridVolume.CopyWithScene(movingVolume)
-      self.gridVolume.SetAndObserveStorageNodeID(None)
-      self.gridVolume.Modified()
-      self.gridVolume.LabelMapOn()
-      # self.gridVolume.SetAndObserveColorNodeID("vtkMRMLColorTableNodeLabels")
-      self.gridVolume.SetName("warped-grid")
+      # vl = slicer.modules.volumes.logic()
+      # self.gridVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "warped-grid")
+      # self.gridVolume = slicer.vtkMRMLScalarVolumeNode()
+      # self.gridVolume.CopyWithScene(movingVolume)
+      # self.gridVolume.SetAndObserveStorageNodeID(None)
+      # self.gridVolume.Modified()
+      # self.gridVolume.LabelMapOn()
+      # # self.gridVolume.SetAndObserveColorNodeID("vtkMRMLColorTableNodeLabels")
+      # self.gridVolume.SetName("warped-grid")
       
-      print "Grid volume id = " + str(self.gridVolume.GetID())
+      # print "Grid volume id = " + str(self.gridVolume.GetID())
   
-      gridImage = self.buildGrid(movingVolume.GetImageData())
-      #self.gridVolume.GetImageData().GetPointData().SetScalars( gridImage.GetPointData().GetScalars() )
-      self.gridVolume.SetAndObserveImageData(gridImage)
+      # gridImage = self.buildGrid(movingVolume.GetImageData())
+      # #self.gridVolume.GetImageData().GetPointData().SetScalars( gridImage.GetPointData().GetScalars() )
+      # self.gridVolume.SetAndObserveImageData(gridImage)
         
       ii = 0
       
@@ -372,8 +444,13 @@ class SteeredFluidRegWidget:
     
   def updateOutputVolume(self, outputImage):
   
+    castf = vtk.vtkImageCast()
+    castf.SetOutputScalarTypeToFloat()
+    castf.SetInput(outputImage)
+    castf.Update()
+  
     outputVolume = self.outputSelector.currentNode()  
-    outputVolume.GetImageData().GetPointData().SetScalars( outputImage.GetPointData().GetScalars() )
+    outputVolume.GetImageData().GetPointData().SetScalars( castf.GetOutput().GetPointData().GetScalars() )
     outputVolume.GetImageData().GetPointData().GetScalars().Modified()
     outputVolume.GetImageData().Modified()
     outputVolume.Modified()
@@ -383,8 +460,11 @@ class SteeredFluidRegWidget:
     gmagf.HandleBoundariesOn()
     gmagf.SetInput(outputImage)
     gmagf.Update()
+
+    gradImage = vtk.vtkImageData()
+    gradImage.DeepCopy( gmagf.GetOutput() )
     
-    self.outputGradientMag = self.normalizeImage( gmagf.GetOutput() )
+    self.outputGradientMag = self.normalizeImage(gradImage)
 
     
   def startDeformableRegistration(self):     
@@ -427,8 +507,7 @@ class SteeredFluidRegWidget:
     
     self.momentas = [momentaX, momentaY, momentaZ]
     
-    # TODO
-    #self.deformation = self.buildIdentity(movingVolume.GetImageData)
+    self.fluidDelta = 0.0
 
     print('registration begin')
     print "return result every %d iterations" %(self.regIterationSlider.value)
@@ -484,6 +563,13 @@ class SteeredFluidRegWidget:
     fixcastf.SetInput(fixedImage)
     fixcastf.Update()
     fixedImage = self.normalizeImage( fixcastf.GetOutput() )
+    
+    movcastf = vtk.vtkImageCast()
+    movcastf.SetOutputScalarTypeToDouble()
+    movcastf.SetInput(movingImage)
+    movcastf.Update()
+    movingImage = movcastf.GetOutput()
+    scaledMovingImage = self.normalizeImage( movcastf.GetOutput() )
 
     outcastf = vtk.vtkImageCast()
     outcastf.SetOutputScalarTypeToDouble()
@@ -521,7 +607,10 @@ class SteeredFluidRegWidget:
       extractf.SetComponents(dim)
       extractf.SetInput(gradf.GetOutput())
       extractf.Update()
-      gradImages[dim] = extractf.GetOutput()
+
+      #gradImages[dim] = extractf.GetOutput()
+      gradImages[dim] = vtk.vtkImageData()
+      gradImages[dim].DeepCopy(extractf.GetOutput())
       
     subf = vtk.vtkImageMathematics()
     subf.SetOperationToSubtract()
@@ -537,11 +626,17 @@ class SteeredFluidRegWidget:
       mulf.SetInput1(diffImage)
       mulf.SetInput2(gradImages[dim])
       mulf.Update()
-      self.momentas[dim] = mulf.GetOutput()
+
+      self.momentas[dim] = vtk.vtkImageData()
+      self.momentas[dim].DeepCopy( mulf.GetOutput() )
+
+    isArrowUsed = False
     
     # Add user inputs to momentum vectors
     # User defined impulses are in arrow queue containing xy, RAS, slice widget
     if not self.logic.arrowQueue.empty():
+
+      isArrowUsed = True
     
       arrowTuple = self.logic.arrowQueue.get()
       
@@ -577,6 +672,7 @@ class SteeredFluidRegWidget:
         forceCenter[dim] = round(startIJK[dim])
         # TODO automatically determine magnitude from the gradient update (balanced?)
         forceVector[dim] = (endRAS[dim] - startRAS[dim])
+        #forceVector[dim] = (endIJK[dim] - startIJK[dim])
         forceMag += forceVector[dim] ** 2
         
       forceMag = math.sqrt(forceMag)
@@ -663,63 +759,88 @@ class SteeredFluidRegWidget:
       return
       
     maxVeloc = math.sqrt(maxVeloc)
+
+    print "delta = %f" % self.fluidDelta
     
-    if maxVeloc > 2.0:
-      for dim in xrange(3):
-        scalf = vtk.vtkImageMathematics()
-        scalf.SetOperationToMultiplyByK()
-        scalf.SetInput1(velocList[dim])
-        scalf.SetConstantK(2.0 / maxVeloc)
-        scalf.Update()
-        velocList[dim] = scalf.GetOutput()
+    if self.registrationIterationNumber == 1 or isArrowUsed or (self.fluidDelta*maxVeloc) > 2.0:
+      self.fluidDelta = 2.0 / maxVeloc
+      print "new delta = %f" % self.fluidDelta
+
+    print "maxVeloc*delta = %f" % (maxVeloc*self.fluidDelta)
+
+    for dim in xrange(3):
+      scalf = vtk.vtkImageMathematics()
+      scalf.SetOperationToMultiplyByK()
+      scalf.SetInput1(velocList[dim])
+      scalf.SetConstantK(self.fluidDelta)
+      scalf.Update()
+      velocList[dim] = scalf.GetOutput()
         
-    appendf = vtk.vtkImageAppendComponents()
-    appendf.SetInput(velocList[0])
-    appendf.AddInput(velocList[1])
-    appendf.AddInput(velocList[2])
-    appendf.Update()
+    #smallDef = [None, None, None]
+    #for dim in xrange(3):
+    #  addf = vtk.vtkImageMathematics()
+    #  addf.SetOperationToAdd()
+    #  addf.SetInput1(self.identityMap[dim])
+    #  addf.SetInput2(velocList[dim])
+    #  addf.Update()
+    #  smallDef[dim] = addf.GetOutput()
+
+    self.displacement = self.composeDisplacements(self.displacement, velocList)
     
-    # TODO compound deformation H = H \circ V
+    warpedImage = self.warpImage(scaledMovingImage, self.displacement)
+    #warpedImage = movingImage
     
-    gridTrafo = vtk.vtkGridTransform()
-    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
-    gridTrafo.SetDisplacementScale(1.0)
-    gridTrafo.SetDisplacementShift(0.0)
-    gridTrafo.SetInterpolationModeToCubic()
-    gridTrafo.Update()
+    #warpedImage = self.warpImage(outputVolume.GetImageData(), velocList)
     
-    # TODO transform from original moving or current warped version?
-    reslice = vtk.vtkImageReslice()
-    reslice.SetInput(outputVolume.GetImageData())
-    reslice.SetResliceTransform(gridTrafo)
-    reslice.SetInterpolationModeToCubic()
-    reslice.SetOutputDimensionality(3)
-    reslice.SetOutputOrigin(fixedImage.GetOrigin())
-    reslice.SetOutputSpacing(fixedImage.GetSpacing())
-    reslice.SetOutputExtent(fixedImage.GetWholeExtent())
-    reslice.SetNumberOfThreads(8)
-    reslice.Update()
+    self.updateOutputVolume(warpedImage)
+        
+    # appendf = vtk.vtkImageAppendComponents()
+    # appendf.SetInput(velocList[0])
+    # appendf.AddInput(velocList[1])
+    # appendf.AddInput(velocList[2])
+    # appendf.Update()
     
-    # greslice = vtk.vtkImageReslice()
-    # greslice.SetInput(self.gridVolume.GetImageData())
-    # greslice.SetResliceTransform(gridTrafo)
-    # greslice.SetInterpolationModeToNearestNeighbor()
-    # greslice.SetOutputDimensionality(3)
-    # greslice.SetOutputOrigin(fixedImage.GetOrigin())
-    # greslice.SetOutputSpacing(fixedImage.GetSpacing())
-    # greslice.SetOutputExtent(fixedImage.GetWholeExtent())
-    # greslice.SetNumberOfThreads(8)
-    # greslice.Update()
+    # # TODO compound deformation H = H \circ V
     
-    print "Resliced"
+    # gridTrafo = vtk.vtkGridTransform()
+    # gridTrafo.SetDisplacementGrid(appendf.GetOutput())
+    # gridTrafo.SetDisplacementScale(1.0)
+    # gridTrafo.SetDisplacementShift(0.0)
+    # gridTrafo.SetInterpolationModeToCubic()
+    # gridTrafo.Update()
     
-    self.updateOutputVolume( reslice.GetOutput() )
+    # # TODO transform from original moving or current warped version?
+    # reslice = vtk.vtkImageReslice()
+    # reslice.SetInput(outputVolume.GetImageData())
+    # reslice.SetResliceTransform(gridTrafo)
+    # reslice.SetInterpolationModeToCubic()
+    # reslice.SetOutputDimensionality(3)
+    # reslice.SetOutputOrigin(fixedImage.GetOrigin())
+    # reslice.SetOutputSpacing(fixedImage.GetSpacing())
+    # reslice.SetOutputExtent(fixedImage.GetWholeExtent())
+    # reslice.SetNumberOfThreads(8)
+    # reslice.Update()
     
-    # self.gridVolume.GetImageData().GetPointData().SetScalars(
-      # greslice.GetOutput().GetPointData().GetScalars() )
-    # self.gridVolume.GetImageData().GetPointData().GetScalars().Modified()
-    # self.gridVolume.GetImageData().Modified()
-    # self.gridVolume.Modified()
+    # # greslice = vtk.vtkImageReslice()
+    # # greslice.SetInput(self.gridVolume.GetImageData())
+    # # greslice.SetResliceTransform(gridTrafo)
+    # # greslice.SetInterpolationModeToNearestNeighbor()
+    # # greslice.SetOutputDimensionality(3)
+    # # greslice.SetOutputOrigin(fixedImage.GetOrigin())
+    # # greslice.SetOutputSpacing(fixedImage.GetSpacing())
+    # # greslice.SetOutputExtent(fixedImage.GetWholeExtent())
+    # # greslice.SetNumberOfThreads(8)
+    # # greslice.Update()
+    
+    # print "Resliced"
+    
+    # self.updateOutputVolume( reslice.GetOutput() )
+    
+    # # self.gridVolume.GetImageData().GetPointData().SetScalars(
+      # # greslice.GetOutput().GetPointData().GetScalars() )
+    # # self.gridVolume.GetImageData().GetPointData().GetScalars().Modified()
+    # # self.gridVolume.GetImageData().Modified()
+    # # self.gridVolume.Modified()
 
      
 
@@ -763,21 +884,26 @@ class SteeredFluidRegWidget:
     gaussf.SetRadiusFactor(3.0)
     gaussf.Update()
     
-    filteredImage = self.normalizeImage(gaussf.GetOutput())
-    
-    mulf = vtk.vtkImageMathematics()
-    mulf.SetOperationToMultiplyByK()
-    mulf.SetInput1(filteredImage)
-    mulf.SetConstantK(range0)
-    mulf.Update()
-    
-    addf = vtk.vtkImageMathematics()
-    addf.SetOperationToAddConstant()
-    addf.SetInput1(mulf.GetOutput())
-    addf.SetConstantC(min0)
-    addf.Update()
-    
-    filteredImage = addf.GetOutput()
+    #DEBUG: avoid memory leaks when returning filter output
+    #filteredImage = gaussf.GetOutput()
+    filteredImage = vtk.vtkImageData()
+    filteredImage.DeepCopy(gaussf.GetOutput())
+
+#    filteredImage = self.normalizeImage(filteredImage)
+#    
+#    mulf = vtk.vtkImageMathematics()
+#    mulf.SetOperationToMultiplyByK()
+#    mulf.SetInput1(filteredImage)
+#    mulf.SetConstantK(range0)
+#    mulf.Update()
+#    
+#    addf = vtk.vtkImageMathematics()
+#    addf.SetOperationToAddConstant()
+#    addf.SetInput1(mulf.GetOutput())
+#    addf.SetConstantC(min0)
+#    addf.Update()
+#    
+#    filteredImage = addf.GetOutput()
     
     minmax1 = filteredImage.GetScalarRange()
     min1 = minmax1[0]
@@ -819,7 +945,9 @@ class SteeredFluidRegWidget:
     # addf.SetConstantC(min0)
     # addf.Update()
     
-    # filteredImage = addf.GetOutput()
+    # # filteredImage = addf.GetOutput()
+    # filteredImage = vtk.vtkImageData()
+    # filteredImage.DeepCopy(addf.GetOutput())
     
     # filteredImage.Modified()
     # filteredImage.GetPointData().GetScalars().Modified()
@@ -832,34 +960,44 @@ class SteeredFluidRegWidget:
     # return filteredImage
     
   def normalizeImage(self, inputImage):
-    # Force recomputation of range
-    inputImage.Modified()
-    inputImage.GetPointData().GetScalars().Modified()
+
+    castf = vtk.vtkImageCast()
+    castf.SetOutputScalarTypeToDouble()
+    castf.SetInput(inputImage)
+    castf.Update()
+
+    castImage = castf.GetOutput()
     
-    minmax = inputImage.GetScalarRange()
+    minmax = castImage.GetScalarRange()
     range = minmax[1] - minmax[0]
     
     if range <= 0.0:
       outImage = vtk.vtkImageData()
-      outImage.DeepCopy(inputImage)
+      outImage.DeepCopy(castImage)
       outImage.GetPointData().GetScalars().FillComponent(0, 0.0)
       return outImage
     
     normf = vtk.vtkImageShiftScale()
-    normf.SetInput(inputImage)
+    normf.SetInput(castImage)
     normf.SetShift(-minmax[0])
     normf.SetScale(1.0 / range)
     normf.Update()
     
-    return normf.GetOutput()
+    #return normf.GetOutput()
+    scaledImage = vtk.vtkImageData()
+    scaledImage.DeepCopy(normf.GetOutput())
+
+    return scaledImage
     
   def buildGrid(self, inputImage):
     castf = vtk.vtkImageCast()
-    castf.SetOutputScalarTypeToUnsignedChar()
+    castf.SetOutputScalarTypeToShort()
     castf.SetInput(inputImage)
     castf.Update()
 
-    gridImage = castf.GetOutput()
+    #gridImage = castf.GetOutput()
+    gridImage = vtk.vtkImageData()
+    gridImage.DeepCopy(castf.GetOutput())
     gridImage.GetPointData().GetScalars().FillComponent(0, 0)
     
     size = gridImage.GetDimensions()
@@ -883,12 +1021,208 @@ class SteeredFluidRegWidget:
             gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
             
     return gridImage
-            
-            
-            
-  def composeDeformation(self, F, G):
-    # TODO return F \circ G
-    pass
+    
+  def warpImage(self, image, H):
+    # Returns I \circ H
+    
+    fixedVolume = self.fixedSelector.currentNode()
+    fixedImage = fixedVolume.GetImageData()
+    
+    appendf = vtk.vtkImageAppendComponents()
+    appendf.SetInput(H[0])
+    appendf.AddInput(H[1])
+    appendf.AddInput(H[2])
+    appendf.Update()
+    
+    gridTrafo = vtk.vtkGridTransform()
+    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
+    gridTrafo.SetDisplacementScale(1.0)
+    gridTrafo.SetDisplacementShift(0.0)
+    gridTrafo.SetInterpolationModeToCubic()
+    gridTrafo.Update()
+    
+    reslice = vtk.vtkImageReslice()
+    reslice.SetInput(image)
+    reslice.SetResliceTransform(gridTrafo)
+    reslice.SetInterpolationModeToCubic()
+    reslice.SetOutputDimensionality(3)
+    reslice.SetOutputOrigin(fixedImage.GetOrigin())
+    reslice.SetOutputSpacing(fixedImage.GetSpacing())
+    reslice.SetOutputExtent(fixedImage.GetWholeExtent())
+    reslice.SetBackgroundLevel(0)
+    reslice.SetNumberOfThreads(8)
+    reslice.Update()
+    
+    #return reslice.GetOutput()
+    warpedImage = vtk.vtkImageData()
+    warpedImage.DeepCopy(reslice.GetOutput())
+    return warpedImage
+    
+  def buildIdentity(self, image):
+    # Returns list of vtkImageData containing the identity transform (idx, idy, idz)
+    castf = vtk.vtkImageCast()
+    castf.SetOutputScalarTypeToDouble()
+    castf.SetInput(image)
+    castf.Update()
+    
+    size = image.GetDimensions()
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+    
+    print "Build id orig = " + str(origin) + " size = " + str(size) + " spacing = " + str(spacing)
+    
+    # NOTE: assume axial orientation, TODO: reorient-flip input images when starting?
+
+    idList = [None, None, None]
+    for dim in xrange(3):
+      copyImage = vtk.vtkImageData()
+      copyImage.DeepCopy(castf.GetOutput())
+      copyImage.GetPointData().GetScalars().FillComponent(0, 0.0)
+      idList[dim] = copyImage
+
+    # TODO: coordinate of MRML volume or vtkImageData?
+    # TODO: use IJK to RAS?
+
+    for i in xrange(size[0]):
+      x = i*spacing[0] + origin[0]
+      for j in xrange(size[1]):
+        y = j*spacing[1] + origin[1]
+        for k in xrange(size[2]):
+          z = k*spacing[2] + origin[2]
+          #idList[0].SetScalarComponentFromDouble(i, j, k, 0, x)
+          #idList[1].SetScalarComponentFromDouble(i, j, k, 0, y)
+          #idList[2].SetScalarComponentFromDouble(i, j, k, 0, z)
+          idList[0].SetScalarComponentFromDouble(i, j, k, 0, i)
+          idList[1].SetScalarComponentFromDouble(i, j, k, 0, j)
+          idList[2].SetScalarComponentFromDouble(i, j, k, 0, k)
+      
+    return idList
+    
+
+  def composeDeformations(self, F, G):
+    # Returns H = F \circ G
+    # F and G are lists of deformation maps (hx, hy, hz)
+    
+    fixedVolume = self.fixedSelector.currentNode()
+    fixedImage = fixedVolume.GetImageData()
+    
+    appendf = vtk.vtkImageAppendComponents()
+    appendf.SetInput(G[0])
+    appendf.AddInput(G[1])
+    appendf.AddInput(G[2])
+    appendf.Update()
+    
+    gridTrafo = vtk.vtkGridTransform()
+    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
+    gridTrafo.SetDisplacementScale(1.0)
+    gridTrafo.SetDisplacementShift(0.0)
+    gridTrafo.SetInterpolationModeToLinear()
+    gridTrafo.Update()
+    
+    H = [None, None, None]
+    
+    for dim in xrange(3):
+      # H[dim] = self.warpImage(F[dim], G)
+      reslice = vtk.vtkImageReslice()
+      reslice.SetInput(F[dim])
+      reslice.SetResliceTransform(gridTrafo)
+      reslice.SetInterpolationModeToLinear()
+      reslice.SetOutputDimensionality(3)
+      reslice.SetOutputOrigin(fixedImage.GetOrigin())
+      reslice.SetOutputSpacing(fixedImage.GetSpacing())
+      reslice.SetOutputExtent(fixedImage.GetWholeExtent())
+      reslice.SetNumberOfThreads(8)
+      reslice.Update()
+      
+      #H[dim] = reslice.GetOutput()
+      H[dim] = vtk.vtkImageData()
+      H[dim].DeepCopy(reslice.GetOutput())
+
+    return H
+
+  def composeDisplacements(self, F, G):
+    # Returns H = F \circ G
+    # F and G are lists of displacement maps [vx, vy, vz]
+    
+    fixedVolume = self.fixedSelector.currentNode()
+    fixedImage = fixedVolume.GetImageData()
+
+    #H = [None, None, None]
+    #for dim in xrange(3):
+    #  addf = vtk.vtkImageMathematics()
+    #  addf.SetOperationToAdd()
+    #  addf.SetInput1(F[dim])
+    #  addf.SetInput2(G[dim])
+    #  addf.Update()
+    #  H[dim] = addf.GetOutput()
+    #return H
+
+    mapF = [None, None, None]
+    for dim in xrange(3):
+      addf = vtk.vtkImageMathematics()
+      addf.SetOperationToAdd()
+      addf.SetInput1(F[dim])
+      addf.SetInput2(self.identityMap[dim])
+      addf.Update()
+
+      mapF[dim] = vtk.vtkImageData()
+      mapF[dim].DeepCopy( addf.GetOutput() )
+
+    appendf = vtk.vtkImageAppendComponents()
+    appendf.SetInput(G[0])
+    appendf.AddInput(G[1])
+    appendf.AddInput(G[2])
+    appendf.Update()
+    
+    gridTrafo = vtk.vtkGridTransform()
+    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
+    gridTrafo.SetDisplacementScale(1.0)
+    gridTrafo.SetDisplacementShift(0.0)
+    gridTrafo.SetInterpolationModeToLinear()
+    gridTrafo.Update()
+    
+    H = [None, None, None]
+    
+    for dim in xrange(3):
+      # H[dim] = self.warpImage(F[dim], G)
+      reslice = vtk.vtkImageReslice()
+      reslice.SetInput(mapF[dim])
+      reslice.SetResliceTransform(gridTrafo)
+      reslice.SetInterpolationModeToLinear()
+      reslice.SetOutputDimensionality(3)
+      #reslice.SetOutputOrigin(fixedImage.GetOrigin())
+      #reslice.SetOutputSpacing(fixedImage.GetSpacing())
+      #reslice.SetOutputExtent(fixedImage.GetWholeExtent())
+      # TODO: SetBackgroundLevel(inf) then detect then replace with id
+      # TODO: for now just map it outside
+      reslice.SetBackgroundLevel(999999)
+      reslice.SetNumberOfThreads(8)
+      reslice.Update()
+      
+      #H[dim] = reslice.GetOutput()
+      H[dim] = vtk.vtkImageData()
+      H[dim].DeepCopy( reslice.GetOutput() )
+
+      minmax = H[dim].GetScalarRange()
+      print "Minmax H = %f, %f" % (minmax[0], minmax[1])
+
+    # NOTE: VTK requires displacement field, need to subtract identity from H
+    for dim in xrange(3):
+      subf = vtk.vtkImageMathematics()
+      subf.SetOperationToSubtract()
+      subf.SetInput1(H[dim])
+      subf.SetInput2(self.identityMap[dim])
+      subf.Update()
+
+      #H[dim] = subf.GetOutput()
+      H[dim] = vtk.vtkImageData()
+      H[dim].DeepCopy(subf.GetOutput())
+
+      minmax = H[dim].GetScalarRange()
+      print "Minmax Hsub = %f, %f" % (minmax[0], minmax[1])
+      
+    return H
+    
   
   #########################################################################
   
@@ -969,7 +1303,7 @@ class SteeredFluidRegLogic(object):
     self.arrowEndRAS = [0.0, 0.0, 0.0]
 
     print("Reload")
-    
+
     self.actionState = "idle"
     self.interactorObserverTags = []
     
@@ -982,7 +1316,7 @@ class SteeredFluidRegLogic(object):
     self.lastDrawMTime = 0
     self.lastDrawSliceWidget = None
     
-    self.lineActor = vtk.vtkActor2D()
+    self.lineActor = vtk.vtkActor()
     
     self.lastHoveredGradMag = 0
     
@@ -1069,7 +1403,7 @@ class SteeredFluidRegLogic(object):
       
       elif event == "LeftButtonPressEvent":
       
-        if self.lastHoveredGradMag > 0.2:
+        if self.lastHoveredGradMag > 0.1:
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
         
@@ -1118,8 +1452,6 @@ class SteeredFluidRegLogic(object):
       elif event == "MouseMoveEvent":
 
         if self.actionState == "interacting":
-          cursor = qt.QCursor(qt.Qt.ForbiddenCursor)
-          app.setOverrideCursor(cursor)
           
           xy = style.GetInteractor().GetEventPosition()
           xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
@@ -1133,8 +1465,11 @@ class SteeredFluidRegLogic(object):
           ijk = movingRAStoIJK.MultiplyPoint(ras + (1,))
           
           g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk[0]), round(ijk[1]), round(ijk[2]), 0)
-          if (g > 0.2):
+          if (g > 0.1):
             cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+            app.setOverrideCursor(cursor)
+          else:
+            cursor = qt.QCursor(qt.Qt.ForbiddenCursor)
             app.setOverrideCursor(cursor)
             
           self.lastHoveredGradMag = g
@@ -1254,9 +1589,9 @@ class SteeredFluidRegLogic(object):
         xarray.SetTuple1(i, endXY[0] - startXY[0])
         yarray.SetTuple1(i, endXY[1] - startXY[1])   
       
-        # line = vtk.vtkLine()
-        # line.GetPointIds().SetId(0, p);
-        # line.GetPointIds().SetId(1, q);
+        #line = vtk.vtkLine()
+        #line.GetPointIds().SetId(0, p);
+        #line.GetPointIds().SetId(1, q);
         
         # lines.InsertNextCell(line)
       
@@ -1264,9 +1599,9 @@ class SteeredFluidRegLogic(object):
       pd.SetPoints(pts)
       #pd.SetLines(lines)
       pd.GetPointData().SetVectors(vectors)
-      #pd.GetPointData().AddArray(xarray)
-      #pd.GetPointData().AddArray(yarray)
-      #pd.GetPointData().AddArray(zarray)
+      pd.GetPointData().AddArray(xarray)
+      pd.GetPointData().AddArray(yarray)
+      pd.GetPointData().AddArray(zarray)
       
       #scalarName = pd.GetPointData().GetScalars().GetName()
       
@@ -1282,41 +1617,63 @@ class SteeredFluidRegLogic(object):
       a = vtk.vtkAssignAttribute()
       a.SetInput(pd)
       a.Assign(vtk.vtkDataSetAttributes.SCALARS, vtk.vtkDataSetAttributes.VECTORS, vtk.vtkAssignAttribute.POINT_DATA)
+
+      print "Building arrow"
       
-      arrowSource = vtk.vtkArrowSource()
+      #arrowSource = vtk.vtkArrowSource()
+      #arrowSource.SetTipLength(5.0 / 20)
+      #arrowSource.SetTipRadius(2.0 / 20)
+      #arrowSource.SetShaftRadius(1.0 / 2000)
+      arrowSource = vtk.vtkCubeSource()
+      arrowSource.Update()
+
+      trafo = vtk.vtkTransform()
+      #trafo.Translate(20, 30, 0)
+      trafo.Scale(1.0 / 10.0, 1.0 / 10, 1.0 / 10)
+
+      pdtrafo = vtk.vtkTransformPolyDataFilter()
+      pdtrafo.SetInput(arrowSource.GetOutput())
+      pdtrafo.SetTransform(trafo)
+      pdtrafo.Update()
+
+      arrowPD = pdtrafo.GetOutput()
       
       glyphSource = vtk.vtkGlyphSource2D()
       glyphSource.SetGlyphTypeToEdgeArrow()
-      #glyphSource.SetScale(2.5)
-      #glyphSource.SetCenter(0, 0, 0)
+      glyphSource.SetScale(2.5)
+      glyphSource.SetCenter(0, 0, 0)
       glyphSource.FilledOn()
       glyphSource.CrossOff()
       glyphSource.Update()
 
-      glyphArrow = vtk.vtkGlyph2D()
-      #glyphArrow.SetInput(pd)
+      glyphArrow = vtk.vtkGlyph3D()
+      glyphArrow.SetInput(pd)
       #glyphArrow.SetInput(a.GetOutput())
-      glyphArrow.SetInput(scalarsToVectors.GetOutput())
-      glyphArrow.SetSource(glyphSource.GetOutput())
-      #glyphArrow.SetSource(arrowSource.GetOutput())
+      #glyphArrow.SetInput(scalarsToVectors.GetOutput())
+      #glyphArrow.SetSource(glyphSource.GetOutput())
+      glyphArrow.SetSource(arrowSource.GetOutput())
+      #glyphArrow.SetSource(arrowPD)
       glyphArrow.ClampingOff()
       glyphArrow.ScalingOn()
-      glyphArrow.OrientOn()
-      glyphArrow.SetScaleFactor(0.2)
+      glyphArrow.OrientOff()
+      glyphArrow.SetScaleFactor(0.5)
       glyphArrow.SetVectorModeToUseVector()
-      glyphArrow.SetScaleModeToScaleByVector()
+      glyphArrow.SetScaleModeToDataScalingOff()
+      #glyphArrow.SetScaleModeToScaleByVector()
       #glyphArrow.SetColorModeToColorByVector()
-      glyphArrow.SetIndexModeToOff()
+      #glyphArrow.SetIndexModeToOff()
+      #glyphArrow.SetRange(5, 20)
       glyphArrow.Update()
       
-      mapper = vtk.vtkPolyDataMapper2D()
+      mapper = vtk.vtkPolyDataMapper()
       #mapper.SetInput(pd)
+      #mapper.SetInput(arrowPD)
       mapper.SetInput(glyphArrow.GetOutput())
       
       self.lineActor.SetMapper(mapper)
       self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])
       #self.lineActor.GetProperty().SetLineWidth(4.0)
-      
+
       # TODO add line actors to the appropriate widgets
       # TODO make each renwin have two ren's from beginning
       renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
@@ -1329,9 +1686,11 @@ class SteeredFluidRegLogic(object):
         renwin.SetNumberOfLayers(2)
         renwin.AddRenderer(renOverlay)
 
+      #renOverlay = rencol.GetItemAsObject(0)
+
       renOverlay.AddActor(self.lineActor)
       renOverlay.SetInteractive(0)
-      renOverlay.SetLayer(1)
+      #renOverlay.SetLayer(1)
       #renOverlay.ResetCamera()
 
       renwin.Render()
@@ -1354,11 +1713,17 @@ class SteeredFluidRegLogic(object):
       fileName = "C:\\Work\\testbrain1.nrrd"
       vl = slicer.modules.volumes.logic()
       brain1Node = vl.AddArchetypeVolume(fileName, "testbrain1", 0)
+    else:
+      nodes = slicer.util.getNodes('testbrain1.nrrd')
+      brain1Node = nodes[0]
+
     if not slicer.util.getNodes('testbrain2*'):
       import os
       fileName = "C:\\Work\\testbrain2.nrrd"
       vl = slicer.modules.volumes.logic()
       brain2Node = vl.AddArchetypeVolume(fileName, "testbrain2", 0)
+    #TODO else assign from list
+
     # if not slicer.util.getNodes('movingToFixed*'):
       # # Create transform node
       # transform = slicer.vtkMRMLLinearTransformNode()
