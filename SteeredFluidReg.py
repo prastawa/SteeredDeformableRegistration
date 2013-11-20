@@ -716,7 +716,7 @@ class SteeredFluidRegWidget:
             for dim in xrange(3):
               a = self.momentas[dim].GetScalarComponentAsDouble(pos[0], pos[1], pos[2], 0)
               self.momentas[dim].SetScalarComponentFromDouble(pos[0], pos[1], pos[2], 0,
-                a + gvec[dim] * forceMag**2 / gdotf)
+                a + gvec[dim] * forceMag**2.0 / gdotf)
              
       # for dim in xrange(3):
         # a = self.momentas[dim].GetScalarComponentAsDouble(forceCenter[0], forceCenter[1], forceCenter[2], 0)
@@ -1006,19 +1006,19 @@ class SteeredFluidRegWidget:
       for j in xrange(size[1]):
         for k in xrange(size[2]):
           if i > 0 and (i % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
 
     for j in xrange(size[1]):
       for i in xrange(size[0]):
         for k in xrange(size[2]):
           if j > 0 and (j % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
             
     for k in xrange(size[2]):
       for i in xrange(size[0]):
         for j in xrange(size[1]):
           if k > 0 and (k % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1)
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
             
     return gridImage
     
@@ -1092,9 +1092,9 @@ class SteeredFluidRegWidget:
           #idList[0].SetScalarComponentFromDouble(i, j, k, 0, x)
           #idList[1].SetScalarComponentFromDouble(i, j, k, 0, y)
           #idList[2].SetScalarComponentFromDouble(i, j, k, 0, z)
-          idList[0].SetScalarComponentFromDouble(i, j, k, 0, i)
-          idList[1].SetScalarComponentFromDouble(i, j, k, 0, j)
-          idList[2].SetScalarComponentFromDouble(i, j, k, 0, k)
+          idList[0].SetScalarComponentFromDouble(i, j, k, 0, float(i))
+          idList[1].SetScalarComponentFromDouble(i, j, k, 0, float(j))
+          idList[2].SetScalarComponentFromDouble(i, j, k, 0, float(k))
       
     return idList
     
@@ -1532,6 +1532,29 @@ class SteeredFluidRegLogic(object):
     if not self.arrowQueue.empty():
     
       numArrows = self.arrowQueue.qsize()
+
+      # TODO renwin = arrowTuple[1], need to maintain PD for each renwin
+      renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
+
+      winsize = renwin.GetSize()
+      winsize = (float(winsize[0]), float(winsize[1]))
+      print "Window size = " + str(winsize)
+
+      ren = renwin.GetRenderers().GetFirstRenderer()
+
+      camera = ren.GetActiveCamera()
+
+      (znear, zfar) = camera.GetClippingRange()
+
+      vmat = camera.GetViewTransformMatrix()
+      mvmat = camera.GetModelViewTransformMatrix()
+
+      pmat = camera.GetCompositeProjectionTransformMatrix(winsize[0]/winsize[1], znear, zfar)
+
+      print str(pmat)
+
+      halfWindowX = winsize[0] / 2
+      halfWindowY = winsize[1] / 2
     
       pts = vtk.vtkPoints()
       
@@ -1573,13 +1596,32 @@ class SteeredFluidRegLogic(object):
         startRAS = arrowTuple[4]
         endRAS = arrowTuple[5]
 
+        startXYview = ((startXY[0] - halfWindowX) / halfWindowX, (startXY[1]-halfWindowY) / halfWindowY)
+
         # TODO assume ortographic projection, no need for inv(camera)
-        p = pts.InsertNextPoint(startXY + (0,))
+        #p = pts.InsertNextPoint(startXY + (0,))
+        #p = pts.InsertNextPoint(startXYview + (0,))
         #q = pts.InsertNextPoint(endXY + (1,))
+
+        #projRAS = pmat.MultiplyPoint( (startXY[0]/winsize[0], startXY[1]/winsize[1]) + (0, 1) )
+        #projRAS = (projRAS[0]/projRAS[3], projRAS[1]/projRAS[3], projRAS[2]/projRAS[3])
+        #print "projRAS = " + str(projRAS)
+        #p = pts.InsertNextPoint( projRAS )
+
+        adjStartX = startXY[0] / winsize[0] * winsize[1] / winsize[0]
+        adjStartY = startXY[1] / winsize[1] * winsize[1] / winsize[0]
+        adjStartX -= winsize[1] / winsize[0] / 2.0
+        adjStartY -= winsize[1] / winsize[0] / 2.0
         
-        #p = pts.InsertNextPoint(startRAS)
+        p = pts.InsertNextPoint((adjStartX, adjStartY, 0))
+
+        adjEndX = endXY[0] / winsize[0] * winsize[1] / winsize[0]
+        adjEndY = endXY[1] / winsize[1] * winsize[1] / winsize[0]
+        adjEndX -= winsize[1] / winsize[0] / 2.0
+        adjEndY -= winsize[1] / winsize[0] / 2.0
         
-        vectors.SetTuple3(i, endXY[0] - startXY[0], endXY[1] - startXY[1], 0.0)
+        #vectors.SetTuple3(i, (endXY[0] - startXY[0])/halfWindowX, (endXY[1] - startXY[1])/halfWindowY, 0.0)
+        vectors.SetTuple3(i, adjEndX - adjStartX, adjEndY - adjStartY, 0.0)
         #vectors.InsertNextTuple3(endRAS[0] - startRAS[0], endRAS[1] - startRAS[1], endRAS[2] - startRAS[2])
         
         # xarray.InsertNextTuple1(endRAS[0] - startRAS[0])
@@ -1594,14 +1636,19 @@ class SteeredFluidRegLogic(object):
         #line.GetPointIds().SetId(1, q);
         
         # lines.InsertNextCell(line)
+
+      #aratio = winsize[1] / winsize[0]
+      #print "aratio = %f" % aratio
+      #pts.InsertNextPoint((-aratio / 2.0, 0, 0))
+      #pts.InsertNextPoint((aratio / 3.0, 0.3, 0))
       
       pd = vtk.vtkPolyData()
       pd.SetPoints(pts)
       #pd.SetLines(lines)
       pd.GetPointData().SetVectors(vectors)
-      pd.GetPointData().AddArray(xarray)
-      pd.GetPointData().AddArray(yarray)
-      pd.GetPointData().AddArray(zarray)
+      #pd.GetPointData().AddArray(xarray)
+      #pd.GetPointData().AddArray(yarray)
+      #pd.GetPointData().AddArray(zarray)
       
       #scalarName = pd.GetPointData().GetScalars().GetName()
       
@@ -1620,12 +1667,16 @@ class SteeredFluidRegLogic(object):
 
       print "Building arrow"
       
-      #arrowSource = vtk.vtkArrowSource()
+      arrowSource = vtk.vtkArrowSource()
       #arrowSource.SetTipLength(5.0 / 20)
       #arrowSource.SetTipRadius(2.0 / 20)
       #arrowSource.SetShaftRadius(1.0 / 2000)
-      arrowSource = vtk.vtkCubeSource()
-      arrowSource.Update()
+
+      #arrowSource = vtk.vtkCubeSource()
+      #arrowSource.SetXLength(0.1)
+      #arrowSource.SetYLength(0.1)
+      #arrowSource.SetZLength(0.1)
+      #arrowSource.Update()
 
       trafo = vtk.vtkTransform()
       #trafo.Translate(20, 30, 0)
@@ -1639,8 +1690,9 @@ class SteeredFluidRegLogic(object):
       arrowPD = pdtrafo.GetOutput()
       
       glyphSource = vtk.vtkGlyphSource2D()
-      glyphSource.SetGlyphTypeToEdgeArrow()
-      glyphSource.SetScale(2.5)
+      #glyphSource.SetGlyphTypeToEdgeArrow()
+      glyphSource.SetGlyphTypeToSquare()
+      glyphSource.SetScale(1.0)
       glyphSource.SetCenter(0, 0, 0)
       glyphSource.FilledOn()
       glyphSource.CrossOff()
@@ -1653,12 +1705,12 @@ class SteeredFluidRegLogic(object):
       #glyphArrow.SetSource(glyphSource.GetOutput())
       glyphArrow.SetSource(arrowSource.GetOutput())
       #glyphArrow.SetSource(arrowPD)
-      glyphArrow.ClampingOff()
+      #glyphArrow.ClampingOff()
       glyphArrow.ScalingOn()
-      glyphArrow.OrientOff()
-      glyphArrow.SetScaleFactor(0.5)
-      glyphArrow.SetVectorModeToUseVector()
-      glyphArrow.SetScaleModeToDataScalingOff()
+      glyphArrow.OrientOn()
+      glyphArrow.SetScaleFactor(0.1)
+      #glyphArrow.SetVectorModeToUseVector()
+      #glyphArrow.SetScaleModeToDataScalingOff()
       #glyphArrow.SetScaleModeToScaleByVector()
       #glyphArrow.SetColorModeToColorByVector()
       #glyphArrow.SetIndexModeToOff()
@@ -1671,12 +1723,11 @@ class SteeredFluidRegLogic(object):
       mapper.SetInput(glyphArrow.GetOutput())
       
       self.lineActor.SetMapper(mapper)
-      self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])
+      #self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])
       #self.lineActor.GetProperty().SetLineWidth(4.0)
 
       # TODO add line actors to the appropriate widgets
       # TODO make each renwin have two ren's from beginning
-      renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
       rencol = renwin.GetRenderers()
       
       if rencol.GetNumberOfItems() == 2:
@@ -1686,10 +1737,8 @@ class SteeredFluidRegLogic(object):
         renwin.SetNumberOfLayers(2)
         renwin.AddRenderer(renOverlay)
 
-      #renOverlay = rencol.GetItemAsObject(0)
-
       renOverlay.AddActor(self.lineActor)
-      renOverlay.SetInteractive(0)
+      #renOverlay.SetInteractive(0)
       #renOverlay.SetLayer(1)
       #renOverlay.ResetCamera()
 
