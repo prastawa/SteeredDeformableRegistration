@@ -1421,6 +1421,8 @@ class SteeredFluidRegLogic(object):
           self.arrowQueue.put(
             (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
 
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+
         self.actionState = "interacting"
         
         self.abortEvent(event)
@@ -1428,6 +1430,8 @@ class SteeredFluidRegLogic(object):
       elif event == "MouseMoveEvent":
 
         if self.actionState == "interacting":
+
+          # Hovering
           
           xy = style.GetInteractor().GetEventPosition()
           xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
@@ -1451,8 +1455,58 @@ class SteeredFluidRegLogic(object):
           self.lastHoveredGradMag = g
 
         elif self.actionState == "arrowStart":
+
+          # Dragging / drawing an arrow
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
+
+          xy = style.GetInteractor().GetEventPosition()
+
+          coord = vtk.vtkCoordinate()
+          coord.SetCoordinateSystemToDisplay()
+
+          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          coord.SetValue(xy[0], xy[1], 0.0)
+          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          # TODO refactor code, one method for drawing collection of arrows, one actor for all arrows (moving + static ones)?
+
+          pts = vtk.vtkPoints()
+          pts.InsertNextPoint(worldStartXY)
+
+          vectors = vtk.vtkDoubleArray()
+          vectors.SetNumberOfComponents(3)
+          vectors.SetNumberOfTuples(1)
+          vectors.SetTuple3(0, worldXY[0]-worldStartXY[0], worldXY[1]-worldStartXY[1], worldXY[2]-worldStartXY[2]) 
+
+          pd = vtk.vtkPolyData()
+          pd.SetPoints(pts)
+          pd.GetPointData().SetVectors(vectors)
+
+	  arrowSource = vtk.vtkArrowSource()
+
+	  glyphArrow = vtk.vtkGlyph3D()
+	  glyphArrow.SetInput(pd)
+	  glyphArrow.SetSource(arrowSource.GetOutput())
+	  #glyphArrow.ClampingOn()
+	  #glyphArrow.SetRange(0.01, 0.5)
+	  glyphArrow.ScalingOn()
+	  glyphArrow.OrientOn()
+	  # TODO figure out proper scaling factor or arrow source size
+	  glyphArrow.SetScaleFactor(0.001)
+	  glyphArrow.SetVectorModeToUseVector()
+	  #glyphArrow.SetScaleModeToScaleByVector()
+	  glyphArrow.Update()
+      
+	  mapper = vtk.vtkPolyDataMapper()
+	  mapper.SetInput(glyphArrow.GetOutput())
+      
+	  self.movingArrowActor.SetMapper(mapper)
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
+
           
         else:
           pass
@@ -1535,11 +1589,11 @@ class SteeredFluidRegLogic(object):
         startRAS = arrowTuple[4]
         endRAS = arrowTuple[5]
 
-        coord.SetValue(startXY[0], startXY[1], 0)
+        coord.SetValue(startXY[0], startXY[1], 0.0)
         worldStartXY = coord.GetComputedWorldValue(ren)
-        p = pts.InsertNextPoint(worldStartXY)
+        pts.InsertNextPoint(worldStartXY)
 
-        coord.SetValue(endXY[0], endXY[1], 0)
+        coord.SetValue(endXY[0], endXY[1], 0.0)
         worldEndXY = coord.GetComputedWorldValue(ren)
 
 	# DEBUG
