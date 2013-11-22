@@ -659,8 +659,6 @@ class SteeredFluidRegWidget:
       movingRAStoIJK = vtk.vtkMatrix4x4()
       self.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
   
-      print "Add to momentas"
-      
       startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
       endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
                 
@@ -677,9 +675,8 @@ class SteeredFluidRegWidget:
         
       forceMag = math.sqrt(forceMag)
 
-      print "forceVector = " + str(forceVector)
                
-      #TODO real splatting? need an area of effect instead of point impulse
+      # TODO: real splatting? need an area of effect instead of point impulse
       pos = [0, 0, 0]
       for ti in xrange(-1,2):
         pos[0] = forceCenter[0] + ti
@@ -727,8 +724,6 @@ class SteeredFluidRegWidget:
     for dim in xrange(3):
       velocList.append( self.applyImageKernel(self.momentas[dim]) )
       
-      print "v range = " + str(velocList[dim].GetScalarRange())
-      
     # Compute max velocity
     sqf = vtk.vtkImageMathematics()
     sqf.SetOperationToSquare()
@@ -738,7 +733,6 @@ class SteeredFluidRegWidget:
     velocMagImage = sqf.GetOutput()
     
     for dim in xrange(1,3):
-      print " v sq dim " + str(dim)
       mulf2 = vtk.vtkImageMathematics()
       mulf2.SetOperationToSquare()
       mulf2.SetInput1(velocList[dim])
@@ -872,8 +866,6 @@ class SteeredFluidRegWidget:
       outImage.GetPointData().GetScalars().FillComponent(0, 0.0)
       return outImage
     
-    print "min0 = %f, max0 = %f" % (min0, max0)
-    
     spacing = inputImage.GetSpacing()
   
     gaussf = vtk.vtkImageGaussianSmooth()
@@ -905,10 +897,9 @@ class SteeredFluidRegWidget:
 #    
 #    filteredImage = addf.GetOutput()
     
-    minmax1 = filteredImage.GetScalarRange()
-    min1 = minmax1[0]
-    max1 = minmax1[1]
-    print "min1 = %f, max1 = %f" % (min1, max1)
+    #minmax1 = filteredImage.GetScalarRange()
+    #min1 = minmax1[0]
+    #max1 = minmax1[1]
     
     return filteredImage
     
@@ -1071,7 +1062,8 @@ class SteeredFluidRegWidget:
     
     print "Build id orig = " + str(origin) + " size = " + str(size) + " spacing = " + str(spacing)
     
-    # NOTE: assume axial orientation, TODO: reorient-flip input images when starting?
+    # NOTE: assume axial orientation
+    # TODO: reorient-flip input images when starting? How to overwrite input volume nodes?
 
     idList = [None, None, None]
     for dim in xrange(3):
@@ -1089,12 +1081,9 @@ class SteeredFluidRegWidget:
         y = j*spacing[1] + origin[1]
         for k in xrange(size[2]):
           z = k*spacing[2] + origin[2]
-          #idList[0].SetScalarComponentFromDouble(i, j, k, 0, x)
-          #idList[1].SetScalarComponentFromDouble(i, j, k, 0, y)
-          #idList[2].SetScalarComponentFromDouble(i, j, k, 0, z)
-          idList[0].SetScalarComponentFromDouble(i, j, k, 0, float(i))
-          idList[1].SetScalarComponentFromDouble(i, j, k, 0, float(j))
-          idList[2].SetScalarComponentFromDouble(i, j, k, 0, float(k))
+          idList[0].SetScalarComponentFromDouble(i, j, k, 0, x)
+          idList[1].SetScalarComponentFromDouble(i, j, k, 0, y)
+          idList[2].SetScalarComponentFromDouble(i, j, k, 0, z)
       
     return idList
     
@@ -1147,16 +1136,6 @@ class SteeredFluidRegWidget:
     fixedVolume = self.fixedSelector.currentNode()
     fixedImage = fixedVolume.GetImageData()
 
-    #H = [None, None, None]
-    #for dim in xrange(3):
-    #  addf = vtk.vtkImageMathematics()
-    #  addf.SetOperationToAdd()
-    #  addf.SetInput1(F[dim])
-    #  addf.SetInput2(G[dim])
-    #  addf.Update()
-    #  H[dim] = addf.GetOutput()
-    #return H
-
     mapF = [None, None, None]
     for dim in xrange(3):
       addf = vtk.vtkImageMathematics()
@@ -1203,9 +1182,6 @@ class SteeredFluidRegWidget:
       H[dim] = vtk.vtkImageData()
       H[dim].DeepCopy( reslice.GetOutput() )
 
-      minmax = H[dim].GetScalarRange()
-      print "Minmax H = %f, %f" % (minmax[0], minmax[1])
-
     # NOTE: VTK requires displacement field, need to subtract identity from H
     for dim in xrange(3):
       subf = vtk.vtkImageMathematics()
@@ -1218,9 +1194,6 @@ class SteeredFluidRegWidget:
       H[dim] = vtk.vtkImageData()
       H[dim].DeepCopy(subf.GetOutput())
 
-      minmax = H[dim].GetScalarRange()
-      print "Minmax Hsub = %f, %f" % (minmax[0], minmax[1])
-      
     return H
     
   
@@ -1316,7 +1289,10 @@ class SteeredFluidRegLogic(object):
     self.lastDrawMTime = 0
     self.lastDrawSliceWidget = None
     
-    self.lineActor = vtk.vtkActor()
+    self.arrowsActor = vtk.vtkActor()
+
+#TODO
+    self.movingArrowActor = vtk.vtkActor()
     
     self.lastHoveredGradMag = 0
     
@@ -1335,7 +1311,7 @@ class SteeredFluidRegLogic(object):
         renwin = sliceWidget.sliceView().renderWindow()
         rencol = renwin.GetRenderers()
         if rencol.GetNumberOfItems() == 2:
-          rencol.GetItemAsObject(1).RemoveActor(self.lineActor)
+          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
 
   def start(self):
 
@@ -1525,7 +1501,7 @@ class SteeredFluidRegLogic(object):
         renwin = sliceWidget.sliceView().renderWindow()
         rencol = renwin.GetRenderers()
         if rencol.GetNumberOfItems() == 2:
-          rencol.GetItemAsObject(1).RemoveActor(self.lineActor)
+          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
           
         renwin.Render()
         
@@ -1533,7 +1509,7 @@ class SteeredFluidRegLogic(object):
     
       numArrows = self.arrowQueue.qsize()
 
-      # TODO renwin = arrowTuple[1], need to maintain PD for each renwin
+      # TODO renwin = arrowTuple[1], need to maintain actors for each renwin?
       renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
 
       winsize = renwin.GetSize()
@@ -1542,51 +1518,14 @@ class SteeredFluidRegLogic(object):
 
       ren = renwin.GetRenderers().GetFirstRenderer()
 
-      camera = ren.GetActiveCamera()
-
-      (znear, zfar) = camera.GetClippingRange()
-
-      vmat = camera.GetViewTransformMatrix()
-      mvmat = camera.GetModelViewTransformMatrix()
-
-      pmat = camera.GetCompositeProjectionTransformMatrix(winsize[0]/winsize[1], znear, zfar)
-
-      print str(pmat)
-
-      halfWindowX = winsize[0] / 2
-      halfWindowY = winsize[1] / 2
+      coord = vtk.vtkCoordinate()
+      coord.SetCoordinateSystemToDisplay()
     
       pts = vtk.vtkPoints()
-      
-      lines = vtk.vtkCellArray()
       
       vectors = vtk.vtkDoubleArray()
       vectors.SetNumberOfComponents(3)
       vectors.SetNumberOfTuples(numArrows)
-      
-      xarray = vtk.vtkDoubleArray()
-      xarray.SetNumberOfComponents(1)
-      xarray.SetNumberOfTuples(numArrows)
-      xarray.SetName("X")
-      xarray.FillComponent(0, 0.0)
-      
-      yarray = vtk.vtkDoubleArray()
-      yarray.SetNumberOfComponents(1)
-      yarray.SetNumberOfTuples(numArrows)
-      yarray.SetName("Y")
-      yarray.FillComponent(0, 0.0)
-      
-      zarray = vtk.vtkDoubleArray()
-      zarray.SetNumberOfComponents(1)
-      zarray.SetNumberOfTuples(numArrows)
-      zarray.SetName("Z")
-      zarray.FillComponent(0, 0.0)
-
-      zeroes = vtk.vtkDoubleArray()
-      zeroes.SetNumberOfComponents(1)
-      zeroes.SetNumberOfTuples(numArrows)
-      zeroes.SetName("Zero")
-      zeroes.FillComponent(0, 0.0)
       
       for i in xrange(numArrows):
         arrowTuple = self.arrowQueue.queue[i]
@@ -1596,138 +1535,49 @@ class SteeredFluidRegLogic(object):
         startRAS = arrowTuple[4]
         endRAS = arrowTuple[5]
 
-        startXYview = ((startXY[0] - halfWindowX) / halfWindowX, (startXY[1]-halfWindowY) / halfWindowY)
+        coord.SetValue(startXY[0], startXY[1], 0)
+        worldStartXY = coord.GetComputedWorldValue(ren)
+        p = pts.InsertNextPoint(worldStartXY)
 
-        # TODO assume ortographic projection, no need for inv(camera)
-        #p = pts.InsertNextPoint(startXY + (0,))
-        #p = pts.InsertNextPoint(startXYview + (0,))
-        #q = pts.InsertNextPoint(endXY + (1,))
+        coord.SetValue(endXY[0], endXY[1], 0)
+        worldEndXY = coord.GetComputedWorldValue(ren)
 
-        #projRAS = pmat.MultiplyPoint( (startXY[0]/winsize[0], startXY[1]/winsize[1]) + (0, 1) )
-        #projRAS = (projRAS[0]/projRAS[3], projRAS[1]/projRAS[3], projRAS[2]/projRAS[3])
-        #print "projRAS = " + str(projRAS)
-        #p = pts.InsertNextPoint( projRAS )
-
-        adjStartX = startXY[0] / winsize[0] * winsize[1] / winsize[0]
-        adjStartY = startXY[1] / winsize[1] * winsize[1] / winsize[0]
-        adjStartX -= winsize[1] / winsize[0] / 2.0
-        adjStartY -= winsize[1] / winsize[0] / 2.0
+	# DEBUG
+        print "startXY = " + str(startXY)
+        print "worldStartXY = " + str(worldStartXY)
         
-        p = pts.InsertNextPoint((adjStartX, adjStartY, 0))
-
-        adjEndX = endXY[0] / winsize[0] * winsize[1] / winsize[0]
-        adjEndY = endXY[1] / winsize[1] * winsize[1] / winsize[0]
-        adjEndX -= winsize[1] / winsize[0] / 2.0
-        adjEndY -= winsize[1] / winsize[0] / 2.0
-        
-        #vectors.SetTuple3(i, (endXY[0] - startXY[0])/halfWindowX, (endXY[1] - startXY[1])/halfWindowY, 0.0)
-        vectors.SetTuple3(i, adjEndX - adjStartX, adjEndY - adjStartY, 0.0)
-        #vectors.InsertNextTuple3(endRAS[0] - startRAS[0], endRAS[1] - startRAS[1], endRAS[2] - startRAS[2])
-        
-        # xarray.InsertNextTuple1(endRAS[0] - startRAS[0])
-        # yarray.InsertNextTuple1(endRAS[1] - startRAS[1])
-        # zarray.InsertNextTuple1(endRAS[2] - startRAS[2])
-        
-        xarray.SetTuple1(i, endXY[0] - startXY[0])
-        yarray.SetTuple1(i, endXY[1] - startXY[1])   
-      
-        #line = vtk.vtkLine()
-        #line.GetPointIds().SetId(0, p);
-        #line.GetPointIds().SetId(1, q);
-        
-        # lines.InsertNextCell(line)
-
-      #aratio = winsize[1] / winsize[0]
-      #print "aratio = %f" % aratio
-      #pts.InsertNextPoint((-aratio / 2.0, 0, 0))
-      #pts.InsertNextPoint((aratio / 3.0, 0.3, 0))
+        vectors.SetTuple3(i, (worldEndXY[0] - worldStartXY[0]), (worldEndXY[1] - worldStartXY[1]), 0.0)
       
       pd = vtk.vtkPolyData()
       pd.SetPoints(pts)
-      #pd.SetLines(lines)
       pd.GetPointData().SetVectors(vectors)
-      #pd.GetPointData().AddArray(xarray)
-      #pd.GetPointData().AddArray(yarray)
-      #pd.GetPointData().AddArray(zarray)
-      
-      #scalarName = pd.GetPointData().GetScalars().GetName()
-      
-      scalarsToVectors = vtk.vtkFieldDataToAttributeDataFilter()
-      scalarsToVectors.SetInput(pd)
-      scalarsToVectors.SetInputFieldToPointDataField()
-      scalarsToVectors.SetOutputAttributeDataToPointData()
-      scalarsToVectors.SetVectorComponent(0, "X", 0)
-      scalarsToVectors.SetVectorComponent(1, "Y", 1)
-      scalarsToVectors.SetVectorComponent(2, "Z", 2)
-      scalarsToVectors.Update()
-      
-      a = vtk.vtkAssignAttribute()
-      a.SetInput(pd)
-      a.Assign(vtk.vtkDataSetAttributes.SCALARS, vtk.vtkDataSetAttributes.VECTORS, vtk.vtkAssignAttribute.POINT_DATA)
-
-      print "Building arrow"
       
       arrowSource = vtk.vtkArrowSource()
-      #arrowSource.SetTipLength(5.0 / 20)
-      #arrowSource.SetTipRadius(2.0 / 20)
-      #arrowSource.SetShaftRadius(1.0 / 2000)
-
-      #arrowSource = vtk.vtkCubeSource()
-      #arrowSource.SetXLength(0.1)
-      #arrowSource.SetYLength(0.1)
-      #arrowSource.SetZLength(0.1)
-      #arrowSource.Update()
-
-      trafo = vtk.vtkTransform()
-      #trafo.Translate(20, 30, 0)
-      trafo.Scale(1.0 / 10.0, 1.0 / 10, 1.0 / 10)
-
-      pdtrafo = vtk.vtkTransformPolyDataFilter()
-      pdtrafo.SetInput(arrowSource.GetOutput())
-      pdtrafo.SetTransform(trafo)
-      pdtrafo.Update()
-
-      arrowPD = pdtrafo.GetOutput()
-      
-      glyphSource = vtk.vtkGlyphSource2D()
-      #glyphSource.SetGlyphTypeToEdgeArrow()
-      glyphSource.SetGlyphTypeToSquare()
-      glyphSource.SetScale(1.0)
-      glyphSource.SetCenter(0, 0, 0)
-      glyphSource.FilledOn()
-      glyphSource.CrossOff()
-      glyphSource.Update()
+      #arrowSource.SetTipLength(1.0 / winsize[0])
+      #arrowSource.SetTipRadius(2.0 / winsize[0])
+      #arrowSource.SetShaftRadius(1.0 / winsize[0])
 
       glyphArrow = vtk.vtkGlyph3D()
       glyphArrow.SetInput(pd)
-      #glyphArrow.SetInput(a.GetOutput())
-      #glyphArrow.SetInput(scalarsToVectors.GetOutput())
-      #glyphArrow.SetSource(glyphSource.GetOutput())
       glyphArrow.SetSource(arrowSource.GetOutput())
-      #glyphArrow.SetSource(arrowPD)
-      #glyphArrow.ClampingOff()
+      #glyphArrow.ClampingOn()
+      #glyphArrow.SetRange(0.01, 0.5)
       glyphArrow.ScalingOn()
       glyphArrow.OrientOn()
-      glyphArrow.SetScaleFactor(0.1)
-      #glyphArrow.SetVectorModeToUseVector()
-      #glyphArrow.SetScaleModeToDataScalingOff()
+      # TODO figure out proper scaling factor or arrow source size
+      glyphArrow.SetScaleFactor(0.001)
+      glyphArrow.SetVectorModeToUseVector()
       #glyphArrow.SetScaleModeToScaleByVector()
-      #glyphArrow.SetColorModeToColorByVector()
-      #glyphArrow.SetIndexModeToOff()
-      #glyphArrow.SetRange(5, 20)
       glyphArrow.Update()
       
       mapper = vtk.vtkPolyDataMapper()
-      #mapper.SetInput(pd)
-      #mapper.SetInput(arrowPD)
       mapper.SetInput(glyphArrow.GetOutput())
       
-      self.lineActor.SetMapper(mapper)
-      #self.lineActor.GetProperty().SetColor([1.0, 0.0, 0.0])
-      #self.lineActor.GetProperty().SetLineWidth(4.0)
+      self.arrowsActor.SetMapper(mapper)
+      #self.arrowsActor.GetProperty().SetColor([1.0, 0.0, 0.0])
 
-      # TODO add line actors to the appropriate widgets
-      # TODO make each renwin have two ren's from beginning
+      # TODO add actors to the appropriate widgets (or all?)
+      # TODO make each renwin have two ren's from beginning?
       rencol = renwin.GetRenderers()
       
       if rencol.GetNumberOfItems() == 2:
@@ -1737,8 +1587,8 @@ class SteeredFluidRegLogic(object):
         renwin.SetNumberOfLayers(2)
         renwin.AddRenderer(renOverlay)
 
-      renOverlay.AddActor(self.lineActor)
-      #renOverlay.SetInteractive(0)
+      renOverlay.AddActor(self.arrowsActor)
+      renOverlay.SetInteractive(0)
       #renOverlay.SetLayer(1)
       #renOverlay.ResetCamera()
 
@@ -1748,10 +1598,11 @@ class SteeredFluidRegLogic(object):
     """Load some default data for development
     and set up a transform and viewing scenario for it.
     """
-    # import SampleData
-    # sampleDataLogic = SampleData.SampleDataLogic()
-    # mrHead = sampleDataLogic.downloadMRHead()
-    # dtiBrain = sampleDataLogic.downloadDTIBrain()
+
+    #import SampleData
+    #sampleDataLogic = SampleData.SampleDataLogic()
+    #mrHead = sampleDataLogic.downloadMRHead()
+    #dtiBrain = sampleDataLogic.downloadDTIBrain()
     
     # w = slicer.modules.SteeredFluidRegWidget
     # w.fixedSelector.setCurrentNode(mrHead)
