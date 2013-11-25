@@ -756,7 +756,7 @@ class SteeredFluidRegWidget:
 
     print "delta = %f" % self.fluidDelta
     
-    if self.registrationIterationNumber == 1 or isArrowUsed or (self.fluidDelta*maxVeloc) > 2.0:
+    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
       self.fluidDelta = 2.0 / maxVeloc
       print "new delta = %f" % self.fluidDelta
 
@@ -769,6 +769,10 @@ class SteeredFluidRegWidget:
       scalf.SetConstantK(self.fluidDelta)
       scalf.Update()
       velocList[dim] = scalf.GetOutput()
+
+    # Reset delta for next iteration if we used an impulse
+    if isArrowUsed:
+      self.fluidDelta = 0.0
         
     #smallDef = [None, None, None]
     #for dim in xrange(3):
@@ -868,87 +872,40 @@ class SteeredFluidRegWidget:
     
     spacing = inputImage.GetSpacing()
   
-    gaussf = vtk.vtkImageGaussianSmooth()
-    gaussf.SetInput(inputImage)
-    gaussf.SetNumberOfThreads(8)
-    gaussf.SetDimensionality(3)
-    gaussf.SetStandardDeviations(4.0 / spacing[0], 4.0 / spacing[1], 4.0 / spacing[2])
-    gaussf.SetRadiusFactor(3.0)
-    gaussf.Update()
+    gaussfLarge = vtk.vtkImageGaussianSmooth()
+    gaussfLarge.SetInput(inputImage)
+    gaussfLarge.SetNumberOfThreads(8)
+    gaussfLarge.SetDimensionality(3)
+    gaussfLarge.SetStandardDeviations(5.0 / spacing[0], 5.0 / spacing[1], 5.0 / spacing[2])
+    gaussfLarge.SetRadiusFactor(3.0)
+    gaussfLarge.Update()
+
+    gaussfSmall = vtk.vtkImageGaussianSmooth()
+    gaussfSmall.SetInput(inputImage)
+    gaussfSmall.SetNumberOfThreads(8)
+    gaussfSmall.SetDimensionality(3)
+    gaussfSmall.SetStandardDeviations(1.0 / spacing[0], 1.0 / spacing[1], 1.0 / spacing[2])
+    gaussfSmall.SetRadiusFactor(3.0)
+    gaussfSmall.Update()
+
+    scalf = vtk.vtkImageMathematics()
+    scalf.SetOperationToMultiplyByK()
+    scalf.SetInput1(gaussfSmall.GetOutput())
+    scalf.SetConstantK(0.1)
+    scalf.Update()
+
+    addf = vtk.vtkImageMathematics()
+    addf.SetOperationToAdd()
+    addf.SetInput1(gaussfLarge.GetOutput())
+    addf.SetInput2(scalf.GetOutput())
+    addf.Update()
     
     #DEBUG: avoid memory leaks when returning filter output
-    #filteredImage = gaussf.GetOutput()
+    #filteredImage = addf.GetOutput()
     filteredImage = vtk.vtkImageData()
-    filteredImage.DeepCopy(gaussf.GetOutput())
-
-#    filteredImage = self.normalizeImage(filteredImage)
-#    
-#    mulf = vtk.vtkImageMathematics()
-#    mulf.SetOperationToMultiplyByK()
-#    mulf.SetInput1(filteredImage)
-#    mulf.SetConstantK(range0)
-#    mulf.Update()
-#    
-#    addf = vtk.vtkImageMathematics()
-#    addf.SetOperationToAddConstant()
-#    addf.SetInput1(mulf.GetOutput())
-#    addf.SetConstantC(min0)
-#    addf.Update()
-#    
-#    filteredImage = addf.GetOutput()
-    
-    #minmax1 = filteredImage.GetScalarRange()
-    #min1 = minmax1[0]
-    #max1 = minmax1[1]
+    filteredImage.DeepCopy(addf.GetOutput())
     
     return filteredImage
-    
-    # fft = vtk.vtkImageFFT()
-    # fft.SetInput( self.normalizeImage(inputImage) )
-    # #fft.SetInput(inputImage)
-    # fft.Update()
-    
-    # bwf = vtk.vtkImageButterworthLowPass()
-    # bwf.SetInput(fft.GetOutput())
-    # bwf.SetCutOff(0.001) # TODO determine from image info
-    # bwf.Update()
-    
-    # rfft = vtk.vtkImageRFFT()
-    # rfft.SetInput(bwf.GetOutput())
-    # rfft.Update()
-    
-    # realf = vtk.vtkImageExtractComponents()
-    # realf.SetInput(rfft.GetOutput())
-    # realf.SetComponents(0)
-    # realf.Update()
-     
-    # filteredImage = self.normalizeImage(realf.GetOutput())
-    
-    # mulf = vtk.vtkImageMathematics()
-    # mulf.SetOperationToMultiplyByK()
-    # mulf.SetInput1(filteredImage)
-    # mulf.SetConstantK(range0)
-    # mulf.Update()
-    
-    # addf = vtk.vtkImageMathematics()
-    # addf.SetOperationToAddConstant()
-    # addf.SetInput1(mulf.GetOutput())
-    # addf.SetConstantC(min0)
-    # addf.Update()
-    
-    # # filteredImage = addf.GetOutput()
-    # filteredImage = vtk.vtkImageData()
-    # filteredImage.DeepCopy(addf.GetOutput())
-    
-    # filteredImage.Modified()
-    # filteredImage.GetPointData().GetScalars().Modified()
-    
-    # minmax1 = filteredImage.GetScalarRange()
-    # min1 = minmax1[0]
-    # max1 = minmax1[1]
-    # print "min1 = %f, max1 = %f" % (min1, max1)
-
-    # return filteredImage
     
   def normalizeImage(self, inputImage):
 
