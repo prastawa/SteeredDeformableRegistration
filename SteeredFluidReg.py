@@ -1485,25 +1485,24 @@ class SteeredFluidRegLogic(object):
           pd.SetPoints(pts)
           pd.GetPointData().SetVectors(vectors)
 
-	  arrowSource = vtk.vtkArrowSource()
+          arrowSource = vtk.vtkArrowSource()
 
-	  glyphArrow = vtk.vtkGlyph3D()
-	  glyphArrow.SetInput(pd)
-	  glyphArrow.SetSource(arrowSource.GetOutput())
-	  #glyphArrow.ClampingOn()
-	  #glyphArrow.SetRange(0.01, 0.5)
-	  glyphArrow.ScalingOn()
-	  glyphArrow.OrientOn()
-	  # TODO figure out proper scaling factor or arrow source size
-	  glyphArrow.SetScaleFactor(0.001)
-	  glyphArrow.SetVectorModeToUseVector()
-	  #glyphArrow.SetScaleModeToScaleByVector()
-	  glyphArrow.Update()
+          glyphArrow = vtk.vtkGlyph3D()
+          glyphArrow.SetInput(pd)
+          glyphArrow.SetSource(arrowSource.GetOutput())
+          glyphArrow.ScalingOn()
+          glyphArrow.OrientOn()
+          # TODO figure out proper scaling factor or arrow source size
+          #glyphArrow.SetScaleFactor(0.001)
+          glyphArrow.SetScaleFactor(2.0)
+          glyphArrow.SetVectorModeToUseVector()
+          glyphArrow.SetScaleModeToScaleByVector()
+          glyphArrow.Update()
       
-	  mapper = vtk.vtkPolyDataMapper()
-	  mapper.SetInput(glyphArrow.GetOutput())
+          mapper = vtk.vtkPolyDataMapper()
+          mapper.SetInput(glyphArrow.GetOutput())
       
-	  self.movingArrowActor.SetMapper(mapper)
+          self.movingArrowActor.SetMapper(mapper)
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
 
@@ -1596,7 +1595,7 @@ class SteeredFluidRegLogic(object):
         coord.SetValue(endXY[0], endXY[1], 0.0)
         worldEndXY = coord.GetComputedWorldValue(ren)
 
-	# DEBUG
+        # DEBUG
         print "startXY = " + str(startXY)
         print "worldStartXY = " + str(worldStartXY)
         
@@ -1614,14 +1613,13 @@ class SteeredFluidRegLogic(object):
       glyphArrow = vtk.vtkGlyph3D()
       glyphArrow.SetInput(pd)
       glyphArrow.SetSource(arrowSource.GetOutput())
-      #glyphArrow.ClampingOn()
-      #glyphArrow.SetRange(0.01, 0.5)
       glyphArrow.ScalingOn()
       glyphArrow.OrientOn()
       # TODO figure out proper scaling factor or arrow source size
-      glyphArrow.SetScaleFactor(0.001)
+      #glyphArrow.SetScaleFactor(0.001)
+      glyphArrow.SetScaleFactor(2.0)
       glyphArrow.SetVectorModeToUseVector()
-      #glyphArrow.SetScaleModeToScaleByVector()
+      glyphArrow.SetScaleModeToScaleByVector()
       glyphArrow.Update()
       
       mapper = vtk.vtkPolyDataMapper()
