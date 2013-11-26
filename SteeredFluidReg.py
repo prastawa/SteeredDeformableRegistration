@@ -218,22 +218,22 @@ class SteeredFluidRegWidget:
     self.regIterationSlider.toolTip = "Number of iterations"
     optFormLayout.addRow("Iterations:", self.regIterationSlider)
 
-    # kernel size
-    self.kernelSizeSlider = ctk.ctkSliderWidget()
-    self.kernelSizeSlider.decimals = 2
-    self.kernelSizeSlider.singleStep = 0.5
-    self.kernelSizeSlider.minimum = 0.5
-    self.kernelSizeSlider.maximum = 50.0
-    self.kernelSizeSlider.toolTip = "Scale of deformation."
-    optFormLayout.addRow("Fluid kernel size:", self.kernelSizeSlider)
+    # Fluid viscosity
+    self.viscositySlider = ctk.ctkSliderWidget()
+    self.viscositySlider.decimals = 2
+    self.viscositySlider.singleStep = 1.0
+    self.viscositySlider.minimum = 0.0
+    self.viscositySlider.maximum = 100.0
+    self.viscositySlider.toolTip = "Viscosity of fluid deformation."
+    optFormLayout.addRow("Fluid viscosity:", self.viscositySlider)
 
     # get default values from logic
     self.regIterationSlider.value = self.logic.regIteration
-    self.kernelSizeSlider.value = self.logic.kernelSize
+    self.viscositySlider.value = self.logic.viscosity
 
     #print(self.logic.regIteration)
 
-    sliders = (self.regIterationSlider, self.kernelSizeSlider)
+    sliders = (self.regIterationSlider, self.viscositySlider)
     for slider in sliders:
       slider.connect('valueChanged(double)', self.updateLogicFromGUI)
 
@@ -269,7 +269,7 @@ class SteeredFluidRegWidget:
     #   self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
     
     self.logic.regIteration = self.regIterationSlider.value
-    self.logic.kernelSize = self.kernelSizeSlider.value
+    self.logic.viscosity = self.viscositySlider.value
  
           
   def onResetButtonToggled(self):
@@ -397,13 +397,11 @@ class SteeredFluidRegWidget:
       compositeNodes = slicer.util.getNodes('vtkMRMLSliceCompositeNode*')
       for compositeNode in compositeNodes.values():
         print "Composite node " + compositeNode.GetName()
+
         #compositeNode.SetLabelVolumeID(self.gridVolume.GetID())
         compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
         compositeNode.SetForegroundVolumeID(outputVolume.GetID())
-        #compositeNode.SetForegroundVolumeID(self.gridVolume.GetID())
         
-        # TODO DEBUG
-        #compositeNode.SetForegroundOpacity(1.0)
         compositeNode.SetForegroundOpacity(0.5)
         if ii == 1:
           compositeNode.SetForegroundOpacity(0.0)
@@ -412,6 +410,8 @@ class SteeredFluidRegWidget:
         compositeNode.SetLabelOpacity(0.5)
         
         ii += 1
+
+      compositeNodes.values()[0].LinkedControlOn()
         
       # Set all view orientation to axial
       sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
@@ -890,13 +890,13 @@ class SteeredFluidRegWidget:
 
     scalf = vtk.vtkImageMathematics()
     scalf.SetOperationToMultiplyByK()
-    scalf.SetInput1(gaussfSmall.GetOutput())
-    scalf.SetConstantK(0.1)
+    scalf.SetInput1(gaussfLarge.GetOutput())
+    scalf.SetConstantK(self.logic.viscosity)
     scalf.Update()
 
     addf = vtk.vtkImageMathematics()
     addf.SetOperationToAdd()
-    addf.SetInput1(gaussfLarge.GetOutput())
+    addf.SetInput1(gaussfSmall.GetOutput())
     addf.SetInput2(scalf.GetOutput())
     addf.Update()
     
@@ -1206,7 +1206,7 @@ class SteeredFluidRegLogic(object):
 
     # parameter defaults
     self.regIteration = 10
-    self.kernelSize = 5
+    self.viscosity = 50.0
 
     # slicer nodes set by the GUI
     self.fixed = fixed
