@@ -1249,7 +1249,7 @@ class SteeredFluidRegLogic(object):
     self.arrowsActor = vtk.vtkActor()
 
     self.movingArrowActor = vtk.vtkActor()
-    self.movingImageActor = vtk.vtkImageActor()
+    self.movingContourActor = vtk.vtkActor2D()
     
     self.lastHoveredGradMag = 0
     
@@ -1352,6 +1352,53 @@ class SteeredFluidRegLogic(object):
         
           self.arrowStartXY = xy
           self.arrowStartRAS = ras
+
+          # Create a patch containing moving image information
+          contourimg = vtk.vtkImageData()
+          contourimg.SetDimensions(50,50,1) # TODO automatically determine from window sizes
+          contourimg.SetSpacing(1.0 / windowW, 1.0 / windowW, 1.0)
+          contourimg.SetNumberOfScalarComponents(3)
+          contourimg.SetScalarTypeToFloat()
+          contourimg.AllocateScalars()
+
+          contourimg.GetPointData().GetScalars().FillComponent(1, 0.0)
+          contourimg.GetPointData().GetScalars().FillComponent(2, 0.0)
+
+          w = slicer.modules.SteeredFluidRegWidget
+          
+          movingRAStoIJK = vtk.vtkMatrix4x4()
+          w.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
+
+          outputImage = w.outputSelector.currentNode().GetImageData()
+
+          for xshift in xrange(50):
+            for yshift in xrange(50):
+              xy_p = (round(xy[0] +  xshift-25), round(xy[1] + yshift-25))
+              xyz_p = sliceWidget.sliceView().convertDeviceToXYZ(xy_p)
+              ras_p = sliceWidget.sliceView().convertXYZToRAS(xyz_p)
+          
+              ijk_p = movingRAStoIJK.MultiplyPoint(ras_p + (1,))
+
+              #TODO verify coord is inside buffer
+              #g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
+              g = outputImage.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
+              contourimg.SetScalarComponentFromDouble(xshift, yshift, 0, 0, g)
+
+          imagemapper = vtk.vtkImageMapper()
+          imagemapper.SetInput(contourimg)
+          imagemapper.SetColorLevel(0.5)
+          imagemapper.SetColorWindow(0.5)
+
+          self.movingContourActor.SetMapper(imagemapper)
+          self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
+
+          # Add image to Yellow slice view
+          lm = slicer.app.layoutManager()
+          yellowWidget = lm.sliceWidget('Yellow')
+          yellowView = yellowWidget.sliceView()
+          yellowStyle = yellowView.interactorStyle()
+          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingContourActor)
+
         else:
           self.actionState = "arrowReject"
 
@@ -1381,7 +1428,12 @@ class SteeredFluidRegLogic(object):
             (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingImageActor)
+
+          lm = slicer.app.layoutManager()
+          yellowWidget = lm.sliceWidget('Yellow')
+          yellowView = yellowWidget.sliceView()
+          yellowStyle = yellowView.interactorStyle()
+          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingContourActor)
 
         self.actionState = "interacting"
         
@@ -1469,32 +1521,7 @@ class SteeredFluidRegLogic(object):
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
 
-          testimg = vtk.vtkImageData()
-          testimg.SetDimensions(10,10,1)
-          testimg.SetSpacing(1.0 / windowW, 1.0 / windowW, 1.0)
-          # TODO DEBUG kinda works, but shifted/rotated
-          #testimg.SetOrigin(worldXY[0]*windowW/2.0, worldXY[1]*windowW/2.0, 0.0)
-          #print "fooXY = " + str((worldXY[0]*windowW/2.0, worldXY[1]*windowW/2.0, 0.0))
-          #testimg.SetOrigin(testXY[0], testXY[1], 0.0)
-          testimg.SetNumberOfScalarComponents(3)
-          testimg.SetScalarTypeToShort()
-          testimg.AllocateScalars()
-          for i in xrange(10):
-            for j in xrange(10):
-              for k in xrange(1):
-                testimg.SetScalarComponentFromDouble(i, j, k, 0, 5000)
-                testimg.SetScalarComponentFromDouble(i, j, k, 1, 0)
-                testimg.SetScalarComponentFromDouble(i, j, k, 2, 0)
-
-          self.movingImageActor.SetInput(testimg)
-          #self.movingImageActor.SetPosition(worldXY)
-          #self.movingImageActor.SetPosition(testXY[0], testXY[1], 0)
-          #self.movingImageActor.SetPosition(0, 0, 0)
-          #self.movingImageActor.SetPosition(worldXY[0], worldXY[1], 0)
-          #self.movingImageActor.SetPosition(xy[0], xy[1], 0)
-          self.movingImageActor.SetPosition(aspectRatio*(xy[0]-windowW/2)/windowW, aspectRatio*(xy[1]-windowH/2)/windowW, 0)
-
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingImageActor)
+          self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
           
         else:
           pass
