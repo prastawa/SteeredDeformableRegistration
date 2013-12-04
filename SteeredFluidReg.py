@@ -1248,8 +1248,8 @@ class SteeredFluidRegLogic(object):
     
     self.arrowsActor = vtk.vtkActor()
 
-#TODO
     self.movingArrowActor = vtk.vtkActor()
+    self.movingImageActor = vtk.vtkImageActor()
     
     self.lastHoveredGradMag = 0
     
@@ -1310,8 +1310,10 @@ class SteeredFluidRegLogic(object):
       sliceNode = self.sliceNodePerStyle[observee]
 
       windowSize = sliceNode.GetDimensions()
-      windowW = windowSize[0]
-      windowH = windowSize[1]
+      windowW = float(windowSize[0])
+      windowH = float(windowSize[1])
+
+      aspectRatio = windowH/windowW
 
       self.lastDrawnSliceWidget = sliceWidget
   
@@ -1379,6 +1381,7 @@ class SteeredFluidRegLogic(object):
             (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingImageActor)
 
         self.actionState = "interacting"
         
@@ -1428,6 +1431,9 @@ class SteeredFluidRegLogic(object):
           coord.SetValue(xy[0], xy[1], 0.0)
           worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
+          testXY = coord.GetComputedLocalDisplayValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+          print "testXY = " + str(testXY)
+
           # TODO refactor code, one method for drawing collection of arrows, one actor for all arrows (moving + static ones)?
 
           pts = vtk.vtkPoints()
@@ -1463,6 +1469,32 @@ class SteeredFluidRegLogic(object):
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
 
+          testimg = vtk.vtkImageData()
+          testimg.SetDimensions(10,10,1)
+          testimg.SetSpacing(1.0 / windowW, 1.0 / windowW, 1.0)
+          # TODO DEBUG kinda works, but shifted/rotated
+          #testimg.SetOrigin(worldXY[0]*windowW/2.0, worldXY[1]*windowW/2.0, 0.0)
+          #print "fooXY = " + str((worldXY[0]*windowW/2.0, worldXY[1]*windowW/2.0, 0.0))
+          #testimg.SetOrigin(testXY[0], testXY[1], 0.0)
+          testimg.SetNumberOfScalarComponents(3)
+          testimg.SetScalarTypeToShort()
+          testimg.AllocateScalars()
+          for i in xrange(10):
+            for j in xrange(10):
+              for k in xrange(1):
+                testimg.SetScalarComponentFromDouble(i, j, k, 0, 5000)
+                testimg.SetScalarComponentFromDouble(i, j, k, 1, 0)
+                testimg.SetScalarComponentFromDouble(i, j, k, 2, 0)
+
+          self.movingImageActor.SetInput(testimg)
+          #self.movingImageActor.SetPosition(worldXY)
+          #self.movingImageActor.SetPosition(testXY[0], testXY[1], 0)
+          #self.movingImageActor.SetPosition(0, 0, 0)
+          #self.movingImageActor.SetPosition(worldXY[0], worldXY[1], 0)
+          #self.movingImageActor.SetPosition(xy[0], xy[1], 0)
+          self.movingImageActor.SetPosition(aspectRatio*(xy[0]-windowW/2)/windowW, aspectRatio*(xy[1]-windowH/2)/windowW, 0)
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingImageActor)
           
         else:
           pass
