@@ -209,6 +209,15 @@ class SteeredFluidRegWidget:
     # Layout within the parameter collapsible button
     optFormLayout = qt.QFormLayout(optCollapsibleButton)
 
+    # Floating image opacity
+    self.opacitySlider = ctk.ctkSliderWidget()
+    self.opacitySlider.decimals = 2
+    self.opacitySlider.singleStep = 0.05
+    self.opacitySlider.minimum = 0.0
+    self.opacitySlider.maximum = 1.0
+    self.opacitySlider.toolTip = "Transparency of floating moving image ."
+    optFormLayout.addRow("Floating image opacity:", self.opacitySlider)
+
     # iteration slider
     self.regIterationSlider = ctk.ctkSliderWidget()
     self.regIterationSlider.decimals = 2
@@ -224,16 +233,17 @@ class SteeredFluidRegWidget:
     self.viscositySlider.singleStep = 1.0
     self.viscositySlider.minimum = 0.0
     self.viscositySlider.maximum = 100.0
-    self.viscositySlider.toolTip = "Viscosity of fluid deformation."
-    optFormLayout.addRow("Fluid viscosity:", self.viscositySlider)
+    self.viscositySlider.toolTip = "Area of effect for deformation forces."
+    optFormLayout.addRow("Deformation stiffness:", self.viscositySlider)
 
     # get default values from logic
     self.regIterationSlider.value = self.logic.regIteration
     self.viscositySlider.value = self.logic.viscosity
+    self.opacitySlider.value = self.logic.opacity
 
     #print(self.logic.regIteration)
 
-    sliders = (self.regIterationSlider, self.viscositySlider)
+    sliders = (self.regIterationSlider, self.viscositySlider, self.opacitySlider)
     for slider in sliders:
       slider.connect('valueChanged(double)', self.updateLogicFromGUI)
 
@@ -270,6 +280,7 @@ class SteeredFluidRegWidget:
     
     self.logic.regIteration = self.regIterationSlider.value
     self.logic.viscosity = self.viscositySlider.value
+    self.logic.opacity = self.opacitySlider.value
  
           
   def onResetButtonToggled(self):
@@ -291,19 +302,19 @@ class SteeredFluidRegWidget:
       movingVolume = self.movingSelector.currentNode()
       outputVolume = self.outputSelector.currentNode()
 
-      cool1 = slicer.vtkMRMLColorTableNode()
-      cool1.SetTypeToCool1()
-      fixedVolume.GetScene().AddNode(cool1)
+      #cool1 = slicer.vtkMRMLColorTableNode()
+      #cool1.SetTypeToCool1()
+      #fixedVolume.GetScene().AddNode(cool1)
 
-      warm1 = slicer.vtkMRMLColorTableNode()
-      warm1.SetTypeToWarm1()
-      movingVolume.GetScene().AddNode(warm1)
+      #warm1 = slicer.vtkMRMLColorTableNode()
+      #warm1.SetTypeToWarm1()
+      #movingVolume.GetScene().AddNode(warm1)
 
       fixedDisplay = fixedVolume.GetDisplayNode()
-      fixedDisplay.SetAndObserveColorNodeID(cool1.GetID())
+      #fixedDisplay.SetAndObserveColorNodeID(cool1.GetID())
 
       movingDisplay = movingVolume.GetDisplayNode()
-      movingDisplay.SetAndObserveColorNodeID(warm1.GetID())
+      #movingDisplay.SetAndObserveColorNodeID(warm1.GetID())
 
       # TODO: DEBUG: cast images before processing?
       # TODO: crashes, how to cast volume nodes?
@@ -1207,6 +1218,7 @@ class SteeredFluidRegLogic(object):
     # parameter defaults
     self.regIteration = 10
     self.viscosity = 50.0
+    self.opacity = 0.5
 
     # slicer nodes set by the GUI
     self.fixed = fixed
@@ -1250,6 +1262,7 @@ class SteeredFluidRegLogic(object):
 
     self.movingArrowActor = vtk.vtkActor()
     self.movingContourActor = vtk.vtkActor2D()
+    #self.movingContourActor = vtk.vtkImageActor()
     
     self.lastHoveredGradMag = 0
     
@@ -1357,12 +1370,15 @@ class SteeredFluidRegLogic(object):
           contourimg = vtk.vtkImageData()
           contourimg.SetDimensions(50,50,1) # TODO automatically determine from window sizes
           contourimg.SetSpacing(1.0 / windowW, 1.0 / windowW, 1.0)
-          contourimg.SetNumberOfScalarComponents(3)
+          #contourimg.SetSpacing(1.0 / (100*windowW), 1.0 / (100*windowW), 1.0)
+          contourimg.SetNumberOfScalarComponents(4)
           contourimg.SetScalarTypeToFloat()
           contourimg.AllocateScalars()
 
           contourimg.GetPointData().GetScalars().FillComponent(1, 0.0)
           contourimg.GetPointData().GetScalars().FillComponent(2, 0.0)
+          #contourimg.GetPointData().GetScalars().FillComponent(3, 0.5)
+          contourimg.GetPointData().GetScalars().FillComponent(3, self.opacity)
 
           w = slicer.modules.SteeredFluidRegWidget
           
@@ -1392,12 +1408,19 @@ class SteeredFluidRegLogic(object):
           self.movingContourActor.SetMapper(imagemapper)
           self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
 
+
+          #self.movingContourActor.SetInput(contourimg)
+          #self.movingContourActor.SetOpacity(0.5)
+          #self.movingContourActor.GetProperty().SetOpacity(0.5)
+
+          print "Init contour pos = " + str(self.movingContourActor.GetPosition())
+
           # Add image to Yellow slice view
           lm = slicer.app.layoutManager()
           yellowWidget = lm.sliceWidget('Yellow')
           yellowView = yellowWidget.sliceView()
           yellowStyle = yellowView.interactorStyle()
-          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingContourActor)
+          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor2D(self.movingContourActor)
 
         else:
           self.actionState = "arrowReject"
@@ -1433,7 +1456,7 @@ class SteeredFluidRegLogic(object):
           yellowWidget = lm.sliceWidget('Yellow')
           yellowView = yellowWidget.sliceView()
           yellowStyle = yellowView.interactorStyle()
-          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingContourActor)
+          yellowStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor2D(self.movingContourActor)
 
         self.actionState = "interacting"
         
@@ -1483,9 +1506,6 @@ class SteeredFluidRegLogic(object):
           coord.SetValue(xy[0], xy[1], 0.0)
           worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
-          testXY = coord.GetComputedLocalDisplayValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-          print "testXY = " + str(testXY)
-
           # TODO refactor code, one method for drawing collection of arrows, one actor for all arrows (moving + static ones)?
 
           pts = vtk.vtkPoints()
@@ -1521,6 +1541,7 @@ class SteeredFluidRegLogic(object):
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
 
+          #self.movingContourActor.SetPosition(worldXY)
           self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
           
         else:
