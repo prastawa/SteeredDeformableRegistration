@@ -30,6 +30,13 @@ class VolumeCL:
     # TODO: only have image info (origin, spacing, orient) and VTK volume?
     # do not keep copies of volume nodes -> issues, clashing names???
     # rename to ImageCL convert from VolumeNode -> CL then can get vtkImageData
+    #self.image = vtk.vtkImageData()
+    #self.image.DeepCopy(volume.GetImageData())
+
+    #self.origin = volume.GetOrigin()
+    #self.spacing = volume.GetSpacing()
+
+    #self.IJKtoRAS = volume.GetIJKToRASDirectionMatrix()
 
     # DEBUG PP
     #self.volumeNode = slicer.vtkMRMLScalarVolumeNode()
@@ -40,15 +47,22 @@ class VolumeCL:
     #image.DeepCopy(volume.GetImageData())
     #self.volumeNode.SetAndObserveImageData(image)
 
-    #vl = slicer.modules.volumes.logic()
-    #self.volumeNode = vl.CloneVolume(slicer.mrmlScene, volume, volume.GetName() + " clone")
+    #self.volumeNode = slicer.mrmlScene.CreateNodeByClass('vtkMRMLScalarVolumeNode')
+    #self.volumeNode.Copy(volume)
+    #self.volumeNode.UnRegister(slicer.mrmlScene)
+    #nodeName = slicer.mrmlScene.GetUniqueNameByString(volume.GetName())
+    #self.volumeNode.SetName(nodeName)
+    #slicer.mrmlScene.AddNode(self.volumeNode)
+
+    vl = slicer.modules.volumes.logic()
+    nodeName = slicer.mrmlScene.GetUniqueNameByString(volume.GetName())
+    self.volumeNode = vl.CloneVolume(slicer.mrmlScene, volume, nodeName)
+    self.volumeNode.SetName(nodeName)
+    slicer.mrmlScene.AddNode(self.volumeNode)
 
     # TODO need orientation matrix->name?
     #self.originalOrientation = volume.GetOrientation()
     self.originalOrientation = "Axial"
-
-    print "Input ID: " + str(volume.GetID())
-    print "Copy ID: " + str(self.volumeNode.GetID())
 
     # Reorient volume to axial if requested
     if makeAxial:
@@ -105,20 +119,35 @@ class VolumeCL:
 
   def __del__(self):
     # Remove volume node
-    # TODO
-    pass
+    slicer.mrmlScene.RemoveNode(self.volumeNode)
+    self.volumeNode.UnRegister(slicer.mrmlScene)
+    
+    del self.clarray
 
 
   def clone(self):
-    copyImage = vtk.vtkImageData()
-    copyImage.DeepCopy(self.volumeNode.GetImageData())
+    #copyImage = vtk.vtkImageData()
+    #copyImage.DeepCopy(self.volumeNode.GetImageData())
 
-    copyVolumeNode = slicer.vtkMRMLScalarVolumeNode()
-    copyVolumeNode.Copy(self.volumeNode)
-    copyVolumeNode.SetName(self.volumeNode.GetName() + " clone")
-    copyVolumeNode.SetAndObserveImageData(copyImage)
+    #copyVolumeNode = slicer.mrmlScene.CreateNodeByClass('vtkMRMLScalarVolumeNode')
+    #copyVolumeNode.UnRegister(slicer.mrmlScene)
+    #nodeName = slicer.mrmlScene.GetUniqueNameByString(self.volumeNode.GetName())
+    #copyVolumeNode.SetName(nodeName)
+    #slicer.mrmlScene.AddNode(copyVolumeNode)
 
-    return VolumeCL(self.clqueue, copyVolumeNode)
+    #nodeName = slicer.mrmlScene.GetUniqueNameByString(self.volumeNode.GetName())
+    #vl = slicer.modules.volumes.logic()
+    #copyVolumeNode = vl.CloneVolume(slicer.mrmlScene, self.volumeNode, nodeName)
+    #slicer.mrmlScene.AddNode(copyVolumeNode)
+
+    #copyVolumeNode = slicer.vtkMRMLScalarVolumeNode()
+    #copyVolumeNode.Copy(self.volumeNode)
+    #copyVolumeNode.SetName(self.volumeNode.GetName() + " clone")
+    #copyVolumeNode.SetAndObserveImageData(copyImage)
+
+    #return VolumeCL(self.clqueue, copyVolumeNode)
+
+    return VolumeCL(self.clqueue, self.volumeNode)
 
   def fill(self, value):
     self.volumeNode.GetImageData().GetPointData().GetScalars().FillComponent(
@@ -210,10 +239,16 @@ class VolumeCL:
     return [gradx, grady, gradz]
 
   def gradient_magnitude(self):
+
+    # TODO: write special kernel for grad mag?
+
     [gx, gy, gz] = self.gradient()
     mag = gx.multiply(gx)
     mag = mag.add(gy.multiply(gy))
     mag = mag.add(gz.multiply(gz))
+
+    del gx, gy, gz
+
     return mag
 
   def gaussian(self, kernelwidth, kernelsize):
@@ -254,6 +289,10 @@ class DeformationCL:
 
     self.set_identity()
 
+    self.hx.volumeNode.SetName(self.hx.volumeNode.GetName() + "-hx")
+    self.hy.volumeNode.SetName(self.hy.volumeNode.GetName() + "-hy")
+    self.hz.volumeNode.SetName(self.hz.volumeNode.GetName() + "-hz")
+
   def set_mapping(self, hx, hy, hz):
     self.hx = hx
     self.hy = hy
@@ -261,14 +300,17 @@ class DeformationCL:
     self.clprogram = self.hx.clprogram
 
   def __del__(self):
-    pass
+    del self.hx
+    del self.hy
+    del self.hz
+
+  def sync_host(self):
+    self.hx.sync_host()
+    self.hy.sync_host()
+    self.hz.sync_host()
 
   def set_identity(self):
     self.clprogram.identity(self.clqueue, self.hx.shape, None, self.hx.clarray.data,  self.hy.clarray.data, self.hz.clarray.data).wait()
-
-    #self.hx.sync_host()
-    #self.hy.sync_host()
-    #self.hz.sync_host()
 
   def add_velocity(self, velocList):
     self.hx = self.hx.add(velocList[0])
@@ -276,10 +318,7 @@ class DeformationCL:
     self.hz = self.hz.add(velocList[2])
 
   def maxMagnitude(self):
-    magVol = self.hx.clone()
-    magVol.fill(0)
-
-    magVol = magVol.add( self.hx.multiply(self.hx) )
+    magVol = self.hx.multiply(self.hx)
     magVol = magVol.add( self.hy.multiply(self.hy) )
     magVol = magVol.add( self.hz.multiply(self.hz) )
 
@@ -639,11 +678,13 @@ class SteeredFluidRegWidget:
       
       if outputVolume is None:
         vl = slicer.modules.volumes.logic()
-        outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
+        #outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
+        outputVolume = vl.CloneVolume(slicer.mrmlScene, self.movingVolumeCL.volumeNode, "steered-warped")
         self.outputSelector.setCurrentNode(outputVolume)
       else:
 	outputImage = vtk.vtkImageData()
-	outputImage.DeepCopy(movingVolume.GetImageData())
+	#outputImage.DeepCopy(movingVolume.GetImageData())
+	outputImage.DeepCopy(self.movingVolumeCL.volumeNode.GetImageData())
         #outputImage.GetPointData().SetScalars(movingVolume.GetImageData().GetPointData().GetScalars())
         outputVolume.SetAndObserveImageData(outputImage)
 
@@ -651,7 +692,7 @@ class SteeredFluidRegWidget:
       self.outputVolumeCL.normalize()
         
       # Force update of gradient magnitude image
-      self.updateOutputVolume( self.outputVolumeCL )
+      self.updateOutputVolume( self.movingVolumeCL )
 
       # TODO DEBUG
       # Propagate image information to image data structures?
@@ -758,6 +799,8 @@ class SteeredFluidRegWidget:
       self.logic.interaction=False
       self.logic.stop()
 
+      # TODO: clear out temporary variables
+
       # TODO: Use a grid transform and make it observable?
       #if(self.logic.transform is not None): 
       #  self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
@@ -770,7 +813,6 @@ class SteeredFluidRegWidget:
     volcl.sync_host()
 
     outputVolume = self.outputSelector.currentNode()  
-    outputVolume.Copy(volcl.volumeNode)
   
     castf = vtk.vtkImageCast()
     castf.SetOutputScalarTypeToFloat()
@@ -783,10 +825,17 @@ class SteeredFluidRegWidget:
     outputVolume.Modified()
     
     gradvolcl = volcl.gradient_magnitude()
-    gradvolcl.normalize()
+# NOTE DEBUG need sync before and after normalize for now
+    #gradvolcl.sync_host()
+    #gradvolcl.normalize()
     gradvolcl.sync_host()
+
     # NOTE: may need vtk deep copy
-    self.outputGradientMag = gradvolcl.volumeNode.GetImageData()
+    #self.outputGradientMag = gradvolcl.volumeNode.GetImageData()
+
+    self.outputGradientMag = vtk.vtkImageData()
+    self.outputGradientMag.DeepCopy(gradvolcl.volumeNode.GetImageData())
+    self.outputGradientMagMax = self.outputGradientMag.GetScalarRange()[1]
 
 #TODO DEBUG for some reason grad mag takes over moving vol????
 
@@ -798,12 +847,10 @@ class SteeredFluidRegWidget:
     # initialTransform = self.initialTransformSelector.currentNode()
     # outputTransform = self.transformSelector.currentNode()
 
-    self.deformationCL = DeformationCL(self.outputVolumeCL)
+    self.deformationCL = DeformationCL(self.fixedVolumeCL)
  
     vl = slicer.modules.volumes.logic()
     
-    #TODO: clone output to moving
-
     self.parameters = {}
     # self.parameters['InitialTransform'] = initialTransform.GetID()
     self.parameters['FixedImageFileName'] = fixedVolume.GetID()
@@ -965,7 +1012,7 @@ class SteeredFluidRegWidget:
               
     velocitiesCL = [None, None, None]
     for dim in xrange(3):
-      velocitiesCL[dim] = momentasCL[dim].gaussian(1.0, 3)
+      velocitiesCL[dim] = momentasCL[dim].gaussian(5.0, 5)
       
     # Compute max velocity
     velocMagCL = velocitiesCL[0].multiply(velocitiesCL[0])
@@ -983,8 +1030,8 @@ class SteeredFluidRegWidget:
 
     print "delta = %f" % self.fluidDelta
     
-    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
-      self.fluidDelta = 2.0 / maxVeloc
+    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 1.5:
+      self.fluidDelta = 1.5 / maxVeloc
       print "new delta = %f" % self.fluidDelta
 
     print "maxVeloc*delta = %f" % (maxVeloc*self.fluidDelta)
@@ -996,11 +1043,11 @@ class SteeredFluidRegWidget:
     if isArrowUsed:
       self.fluidDelta = 0.0
 
-    smallDeformationCL = DeformationCL(self.outputVolumeCL)
+    smallDeformationCL = DeformationCL(self.fixedVolumeCL)
     smallDeformationCL.add_velocity(velocitiesCL)
 
-    #self.deformationCL = self.deformationCL.compose(smallDeformationCL)
-    self.deformationCL = smallDeformationCL
+    self.deformationCL = self.deformationCL.compose(smallDeformationCL)
+    #self.deformationCL = smallDeformationCL
 
     #tempVolumeCL = self.deformationCL.applyTo(self.movingVolumeCL)
     #self.outputVolumeCL.volumeNode.GetImageData().DeepCopy(
@@ -1008,7 +1055,7 @@ class SteeredFluidRegWidget:
     #self.updateOutputVolume(tempVolumeCL)
 
     self.outputVolumeCL = self.deformationCL.applyTo(self.movingVolumeCL)
-#TODO: need to retag as output?
+#TODO: need to set node name as output?
     self.updateOutputVolume(self.outputVolumeCL)
      
 
@@ -1570,7 +1617,7 @@ class SteeredFluidRegLogic(object):
           ijk = movingRAStoIJK.MultiplyPoint(ras + (1,))
           
           g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk[0]), round(ijk[1]), round(ijk[2]), 0)
-          if nodeIndex > 2 and (g > 0.01):
+          if nodeIndex > 2 and (g > 0.1*w.outputGradientMagMax):
             cursor = qt.QCursor(qt.Qt.OpenHandCursor)
             app.setOverrideCursor(cursor)
           else:

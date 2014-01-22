@@ -250,18 +250,18 @@ __kernel void gradient(
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-  size_t offset_a_x = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
-  size_t offset_b_x = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
+  size_t offset_a_z = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
+  size_t offset_b_z = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
   size_t offset_a_y = slice*ROWS*COLUMNS + row_a*COLUMNS + column;
   size_t offset_b_y = slice*ROWS*COLUMNS + row_b*COLUMNS + column;
-  size_t offset_a_z = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
-  size_t offset_b_z = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_a_x = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_b_x = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
 
 // TODO divide by oriented spacing
 
-  dst_x[offset] = 0.5*(src[offset_b_x] - src[offset_a_x]);
+  dst_x[offset] = 0.5*(src[offset_b_z] - src[offset_a_z]);
   dst_y[offset] = 0.5*(src[offset_b_y] - src[offset_a_y]);
-  dst_z[offset] = 0.5*(src[offset_b_z] - src[offset_a_z]);
+  dst_z[offset] = 0.5*(src[offset_b_x] - src[offset_a_x]);
 }
 
 //
@@ -284,7 +284,6 @@ __kernel void interpolate(
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-
   // TODO Convert to voxel coordinate
 // TODO use origin and oriented spacing , from orientMat * spacing?
 // TODO make sure all inputs are converted to axial orient with non-neg spacings beforehand
@@ -293,9 +292,17 @@ __kernel void interpolate(
   float y = hy[offset];
   float z = hx[offset];
 
-  int x0 = (int)x;
-  int y0 = (int)y;
-  int z0 = (int)z;
+/*
+  // Nearest neighbor
+  int x0 = convert_int(x+0.5);
+  int y0 = convert_int(y+0.5);
+  int z0 = convert_int(z+0.5);
+  dst[offset] = src[x0*ROWS*COLUMNS + y0*COLUMNS + z0];
+*/
+
+  int x0 = convert_int(x);
+  int y0 = convert_int(y);
+  int z0 = convert_int(z);
 
   if (x0 < 0) x0 = 0;
   if (y0 < 0) y0 = 0;
@@ -315,9 +322,9 @@ __kernel void interpolate(
   if (y1 > (ROWS-1)) y1 = ROWS-1;
   if (z1 > (COLUMNS-1)) z1 = COLUMNS-1;
 
-  float fx1 = x - (float)x0;
-  float fy1 = y - (float)y0;
-  float fz1 = z - (float)y0;
+  float fx1 = x - floor(x);
+  float fy1 = y - floor(y);
+  float fz1 = z - floor(z);
 
   float fx0 = 1.0 - fx1;
   float fy0 = 1.0 - fy1;
