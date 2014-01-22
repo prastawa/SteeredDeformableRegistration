@@ -58,6 +58,7 @@ __kernel void zero(__global float* dst)
 // Basic arithmetic kernels
 //
 
+// TODO NOT NEEDED, just do a_array + b_array
 __kernel void add(
   __global float* src1, __global float* src2, __global float* dst)
 {
@@ -69,7 +70,6 @@ __kernel void add(
     return;
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
-  //size_t offset =row*slice*ROWS*COLUMNS + slice + column;
 
   dst[offset] = src1[offset] + src2[offset];
 }
@@ -148,6 +148,8 @@ __kernel void multiply_scalar(
 
   dst[offset] = src[offset] * scale[0];
 }
+
+// TODO identity map ??? -> (dst_x, dst_y, dst_z)
 
 //
 // Gaussian filtering
@@ -248,12 +250,12 @@ __kernel void gradient(
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-  size_t offset_a_x = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
-  size_t offset_b_x = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_a_x = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
+  size_t offset_b_x = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
   size_t offset_a_y = slice*ROWS*COLUMNS + row_a*COLUMNS + column;
   size_t offset_b_y = slice*ROWS*COLUMNS + row_b*COLUMNS + column;
-  size_t offset_a_z = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
-  size_t offset_b_z = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
+  size_t offset_a_z = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_b_z = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
 
 // TODO divide by oriented spacing
 
@@ -285,10 +287,11 @@ __kernel void interpolate(
 
   // TODO Convert to voxel coordinate
 // TODO use origin and oriented spacing , from orientMat * spacing?
-// TODO make sure all inputs are converted to identity orient with non-neg spacings beforehand
-  float x = hx[offset];
+// TODO make sure all inputs are converted to axial orient with non-neg spacings beforehand
+// TODO: need to flip x and z --> WHY??
+  float x = hz[offset];
   float y = hy[offset];
-  float z = hz[offset];
+  float z = hx[offset];
 
   int x0 = (int)x;
   int y0 = (int)y;
@@ -297,14 +300,17 @@ __kernel void interpolate(
   if (x0 < 0) x0 = 0;
   if (y0 < 0) y0 = 0;
   if (z0 < 0) z0 = 0;
-  if (x0 > (SLICES-1)) x0 = SLICES-1;
+  if (x0 > (COLUMNS-1)) x0 = COLUMNS-1;
   if (y0 > (ROWS-1)) y0 = ROWS-1;
-  if (z0 > (COLUMNS-1)) z0 = COLUMNS-1;
+  if (z0 > (SLICES-1)) z0 = SLICES-1;
 
   int x1 = x0 + 1;
   int y1 = y0 + 1;
   int z1 = z0 + 1;
 
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (z1 < 0) z1 = 0;
   if (x1 > (SLICES-1)) x1 = SLICES-1;
   if (y1 > (ROWS-1)) y1 = ROWS-1;
   if (z1 > (COLUMNS-1)) z1 = COLUMNS-1;
@@ -335,4 +341,30 @@ __kernel void interpolate(
     + fx1*fy0*fz1*pix101
     + fx1*fy1*fz0*pix110
     + fx1*fy1*fz1*pix111;
+}
+
+//
+// Identity map
+//
+
+__kernel void identity(
+  __global float* hx,
+  __global float* hy,
+  __global float* hz)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
+    return;
+
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
+
+  // TODO: use image spacing and origin
+
+  hx[offset] = column;
+  hy[offset] = row;
+  hz[offset] = slice;
+
 }

@@ -110,6 +110,13 @@ print("CL a+a")
 out1 = out1_array.get()
 print(out1)
 
+print "Copy array"
+q_array = a_array.copy()
+volumeCLProgram.add(queue, shape, None, q_array.data, q_array.data, out2_array.data).wait()
+print("CL q+q")
+out2 = out2_array.get()
+print(out2)
+
 var = n.zeros((1,), dtype=n.float32)
 var[0] = 0.5
 var_array = cla.to_device(queue, var)
@@ -124,3 +131,5 @@ volumeCLProgram.gaussian(queue, shape, None, a_array.data, var_array.data, width
 print("gaussian a")
 out1 = out1_array.get()
 print(out1)
+
+
