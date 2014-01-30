@@ -2,6 +2,8 @@ import pyopencl as cl
 import pyopencl.array as cla
 import numpy as n
 
+import math
+
 for platform in cl.get_platforms():
   for device in platform.get_devices():
    print "OpenCL platform %s device: %s" % (str(platform), cl.device_type.to_string(device.type))
@@ -117,19 +119,34 @@ print("CL q+q")
 out2 = out2_array.get()
 print(out2)
 
+sigma = 3
+
+numSteps = 4
+
 var = n.zeros((1,), dtype=n.float32)
-var[0] = 0.5
+var[0] = sigma
 var_array = cla.to_device(queue, var)
 width = n.zeros((1,), dtype=n.int32)
-width[0] = 3
+width[0] = 7
 width_array = cla.to_device(queue, width)
 
-print("a")
-print(a)
+a_array.fill(0)
 
-volumeCLProgram.gaussian(queue, shape, None, a_array.data, var_array.data, width_array.data, out1_array.data).wait()
-print("gaussian a")
-out1 = out1_array.get()
-print(out1)
+print("a")
+print(a_array)
+
+volumeCLProgram.gaussian_y(queue, shape, None, a_array.data, var_array.data, width_array.data, out1_array.data).wait()
+print("gaussian_x a")
+print(out1_array)
+
+print("inplace gaussian a")
+#volumeCLProgram.gaussian_x_step(queue, (shape[1], shape[2]), None, a_array.data, var_array.data)
+volumeCLProgram.gaussian_y_step(queue, (shape[0], shape[2]), None, a_array.data, var_array.data)
+#volumeCLProgram.gaussian_z_step(queue, (shape[0], shape[1]), None, a_array.data, var_array.data)
+#volumeCLProgram.gaussian_z_step(queue, (shape[0], shape[1], 1), None, a_array.data, var_array.data)
+#_lambda = (sigma*sigma) / (2.0*numSteps)
+#nu = (1.0 + 2.0*_lambda - math.sqrt(1.0 + 4.0*_lambda)) / (2.0*_lambda);
+#a_array *= math.pow(nu / _lambda, 3*numSteps)
+print(a_array)
 
 

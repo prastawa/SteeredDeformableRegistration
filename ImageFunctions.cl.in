@@ -22,6 +22,8 @@
 //#define GAUSSIAN_KERNEL_SIZE %(kernelSize)d
 //#define GAUSSIAN_KERNEL_WIDTH %(kernelWidth)f
 
+#define NUM_GAUSSIAN_STEPS 5
+
 //
 // Basic data management
 //
@@ -149,14 +151,12 @@ __kernel void multiply_scalar(
   dst[offset] = src[offset] * scale[0];
 }
 
-// TODO identity map ??? -> (dst_x, dst_y, dst_z)
-
 //
 // Gaussian filtering
 //
 
 // Use float array to store var and width due to PyOpenCL issue (???)
-__kernel void gaussian(
+__kernel void gaussian_x(
   __global float* src,
   __global float* var, __global int* width,
   __global float* dst)
@@ -170,51 +170,274 @@ __kernel void gaussian(
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-  dst[offset] = 0.0;
-
-  int kernelSize = width[0];
-  int halfKernelSize = kernelSize / 2;
+  size_t kernelSize = convert_uint(width[0]);
+  size_t halfKernelSize = kernelSize / 2;
 
   float kernelWidthSq = var[0];
 
+  size_t slice0 = slice - halfKernelSize;
+  if (slice0 >= SLICES) slice0 = 0;
+
+  size_t slice1 = slice + halfKernelSize;
+  if (slice1 >= SLICES) slice1 = SLICES - 1;
+
+  float fslice = convert_float(slice);
+
+  float wv = 0.0;
   float n_weight = 0.0;
 
-  for (int i = -halfKernelSize; i <= halfKernelSize; i++)
+  for (size_t pslice = slice0; pslice <= slice1; pslice++)
   {
-    int px = (int)slice + i;
-    if (px < 0)  px = 0; 
-    if (px > SLICES-1) px = SLICES-1;
+    float d = convert_float(pslice) - fslice;
+    float g = exp(-0.5 * d*d / kernelWidthSq);
 
-    float gx = exp(-0.5 * i*i / kernelWidthSq);
+    size_t n_offset = pslice*ROWS*COLUMNS + row*COLUMNS + column;
+    wv += src[n_offset] * g;
 
-    for (int j = -halfKernelSize; j <= halfKernelSize; j++)
-    {
-      int py = (int)row + j;
-      if (py < 0)  py = 0; 
-      if (py > ROWS-1) py = ROWS-1;
-
-      float gy = exp(-0.5 * j*j / kernelWidthSq);
-
-      for (int k = -halfKernelSize; k <= halfKernelSize; k++)
-      {
-        int pz = (int)column + k;
-        if (pz < 0)  pz = 0; 
-        if (pz > COLUMNS-1) pz = COLUMNS-1;
-
-        float gz = exp(-0.5 * k*k / kernelWidthSq);
-
-        float w = gx * gy * gz;
-
-        size_t n_offset = px*ROWS*COLUMNS + py*COLUMNS + pz;
-        dst[offset] += src[n_offset] * w;
-
-        n_weight += w;
-      }
-    }
+    n_weight += g;
   }
 
   if (n_weight > 0.0)
-    dst[offset] /= n_weight;
+    wv /= n_weight;
+
+  dst[offset] = wv;
+}
+
+__kernel void gaussian_y(
+  __global float* src,
+  __global float* var, __global int* width,
+  __global float* dst)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
+    return;
+
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
+
+  size_t kernelSize = convert_uint(width[0]);
+  size_t halfKernelSize = kernelSize / 2;
+
+  float kernelWidthSq = var[0];
+
+  size_t row0 = row - halfKernelSize;
+  if (row0 >= ROWS) row0 = 0;
+
+  size_t row1 = row + halfKernelSize;
+  if (row1 >= ROWS) row1 = ROWS - 1;
+
+  float frow = convert_float(row);
+
+  float wv = 0.0;
+  float n_weight = 0.0;
+
+  for (size_t prow = row0; prow <= row1; prow++)
+  {
+    float d = convert_float(prow) - frow;
+    float g = exp(-0.5 * d*d / kernelWidthSq);
+
+    size_t n_offset = slice*ROWS*COLUMNS + prow*COLUMNS + column;
+    wv += src[n_offset] * g;
+
+    n_weight += g;
+  }
+
+  if (n_weight > 0.0)
+    wv /= n_weight;
+
+  dst[offset] = wv;
+}
+
+__kernel void gaussian_z(
+  __global float* src,
+  __global float* var, __global int* width,
+  __global float* dst)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
+    return;
+
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
+
+  size_t kernelSize = convert_uint(width[0]);
+  size_t halfKernelSize = kernelSize / 2;
+
+  float kernelWidthSq = var[0];
+
+  size_t column0 = column - halfKernelSize;
+  if (column0 >= COLUMNS) column0 = 0;
+
+  size_t column1 = column + halfKernelSize;
+  if (column1 >= COLUMNS) column1 = COLUMNS - 1;
+
+  float fcolumn = convert_float(column);
+
+  float wv = 0.0;
+  float n_weight = 0.0;
+
+  for (size_t pcolumn = column0; pcolumn <= column1; pcolumn++)
+  {
+    float d = convert_float(pcolumn) - fcolumn;
+    float g = exp(-0.5 * d*d / kernelWidthSq);
+
+    size_t n_offset = slice*ROWS*COLUMNS + row*COLUMNS + pcolumn;
+    wv += src[n_offset] * g;
+
+    n_weight += g;
+  }
+
+  if (n_weight > 0.0)
+    wv /= n_weight;
+
+  dst[offset] = wv;
+}
+
+// Gaussian filtering in x direction, in-place
+__kernel void recursive_gaussian_x(
+  __global float* img,
+  __global float* sigma)
+{
+// Need to accumulate over slice...
+// working shape size???? parallelization over 2d so shape is (y, z)
+  size_t column = get_global_id(1);
+  size_t row = get_global_id(0);
+
+  if (row >= ROWS || column >= COLUMNS)
+    return;
+
+  size_t sliceStart = row*COLUMNS + column;
+  size_t sliceEnd = (SLICES-1)*ROWS*COLUMNS + row*COLUMNS + column;
+
+  float lambda = (sigma[0]*sigma[0]) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
+  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+
+  float boundary = (1.0 / (1.0 - nu));
+
+  for (int step = 0; step < NUM_GAUSSIAN_STEPS; step++)
+  {
+    img[sliceStart] *= boundary;
+
+    for (size_t slice = 1; slice < SLICES; slice++)
+    {
+      size_t pos = slice*ROWS*COLUMNS + sliceStart;
+      size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
+      img[pos] += img[pos_prev] * nu;
+    }
+
+    img[sliceEnd] *= boundary;
+
+    for (size_t slice = (SLICES-1); slice > 0; slice--)
+    {
+      size_t pos = slice*ROWS*COLUMNS + sliceStart;
+      size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
+      img[pos_prev] += img[pos] * nu;
+    }
+
+    for (size_t slice = 0; slice < SLICES; slice++)
+    {
+      size_t pos = slice*ROWS*COLUMNS + sliceStart;
+      img[pos] *= (nu / lambda);
+    }
+  }
+}
+
+// Gaussian filtering in y direction, in-place
+__kernel void recursive_gaussian_y(
+  __global float* img,
+  __global float* sigma)
+{
+  size_t column = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || column >= COLUMNS)
+    return;
+
+  size_t rowStart = slice*ROWS*COLUMNS + column;
+  size_t rowEnd = slice*ROWS*COLUMNS + (ROWS-1)*COLUMNS + column;
+
+  float lambda = (sigma[0]*sigma[0]) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
+  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+
+  float boundary = (1.0 / (1.0 - nu));
+
+  for (int step = 0; step < NUM_GAUSSIAN_STEPS; step++)
+  {
+    img[rowStart] *= boundary;
+
+    for (size_t row = 1; row < ROWS; row++)
+    {
+      size_t pos = row*COLUMNS + rowStart;
+      size_t pos_prev = (row-1)*COLUMNS + rowStart;
+      img[pos] += img[pos_prev] * nu;
+    }
+
+    img[rowEnd] *= boundary;
+
+    for (size_t row = (ROWS-1); row > 0; row--)
+    {
+      size_t pos = row*COLUMNS + rowStart;
+      size_t pos_prev = (row-1)*COLUMNS + rowStart;
+      img[pos_prev] += img[pos] * nu;
+    }
+
+    for (size_t row = 0; row < ROWS; row++)
+    {
+      size_t pos = row*COLUMNS + rowStart;
+      img[pos] *= (nu / lambda);
+    }
+  }
+}
+
+// Gaussian filtering in z direction, in-place
+__kernel void recursive_gaussian_z(
+  __global float* img,
+  __global float* sigma)
+{
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || row >= ROWS)
+    return;
+
+  size_t columnStart = slice*ROWS*COLUMNS + row*COLUMNS;
+  size_t columnEnd = slice*ROWS*COLUMNS + row*COLUMNS + COLUMNS-1;
+
+  float lambda = (sigma[0]*sigma[0]) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
+  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+
+  float boundary = (1.0 / (1.0 - nu));
+
+  for (int step = 0; step < NUM_GAUSSIAN_STEPS; step++)
+  {
+    img[columnStart] *= boundary;
+
+    for (size_t column = 1; column < COLUMNS; column++)
+    {
+      size_t pos = column + columnStart;
+      size_t pos_prev = (column-1) + columnStart;
+      img[pos] += img[pos_prev] * nu;
+    }
+
+    img[columnEnd] *= boundary;
+
+    for (size_t column = (COLUMNS-1); column > 0; column--)
+    {
+      size_t pos = column + columnStart;
+      size_t pos_prev = (column-1) + columnStart;
+      img[pos_prev] += img[pos] * nu;
+    }
+
+    for (size_t column = 0; column < COLUMNS; column++)
+    {
+      size_t pos = column + columnStart;
+      img[pos] *= (nu / lambda);
+    }
+  }
 }
 
 //
@@ -234,34 +457,34 @@ __kernel void gradient(
   if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t column_a = column - 1;
-  size_t column_b = column + 1;
-  size_t row_a = row - 1;
-  size_t row_b = row + 1;
   size_t slice_a = slice - 1;
   size_t slice_b = slice + 1;
+  size_t row_a = row - 1;
+  size_t row_b = row + 1;
+  size_t column_a = column - 1;
+  size_t column_b = column + 1;
 
-  if (column_a >= COLUMNS) column_a = 0;
-  if (column_b >= COLUMNS) column_b = COLUMNS - 1;
-  if (row_a >= ROWS) row_a = 0;
-  if (row_b >= ROWS) row_b = ROWS - 1;
   if (slice_a >= SLICES) slice_a = 0;
   if (slice_b >= SLICES) slice_b = SLICES - 1;
+  if (row_a >= ROWS) row_a = 0;
+  if (row_b >= ROWS) row_b = ROWS - 1;
+  if (column_a >= COLUMNS) column_a = 0;
+  if (column_b >= COLUMNS) column_b = COLUMNS - 1;
 
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-  size_t offset_a_z = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
-  size_t offset_b_z = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
-  size_t offset_a_y = slice*ROWS*COLUMNS + row_a*COLUMNS + column;
-  size_t offset_b_y = slice*ROWS*COLUMNS + row_b*COLUMNS + column;
   size_t offset_a_x = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
   size_t offset_b_x = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_a_y = slice*ROWS*COLUMNS + row_a*COLUMNS + column;
+  size_t offset_b_y = slice*ROWS*COLUMNS + row_b*COLUMNS + column;
+  size_t offset_a_z = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
+  size_t offset_b_z = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
 
 // TODO divide by oriented spacing
 
-  dst_x[offset] = 0.5*(src[offset_b_z] - src[offset_a_z]);
+  dst_x[offset] = 0.5*(src[offset_b_x] - src[offset_a_x]);
   dst_y[offset] = 0.5*(src[offset_b_y] - src[offset_a_y]);
-  dst_z[offset] = 0.5*(src[offset_b_x] - src[offset_a_x]);
+  dst_z[offset] = 0.5*(src[offset_b_z] - src[offset_a_z]);
 }
 
 //
@@ -287,10 +510,9 @@ __kernel void interpolate(
   // TODO Convert to voxel coordinate
 // TODO use origin and oriented spacing , from orientMat * spacing?
 // TODO make sure all inputs are converted to axial orient with non-neg spacings beforehand
-// TODO: need to flip x and z --> WHY??
-  float x = hz[offset];
+  float x = hx[offset];
   float y = hy[offset];
-  float z = hx[offset];
+  float z = hz[offset];
 
 /*
   // Nearest neighbor
@@ -307,9 +529,9 @@ __kernel void interpolate(
   if (x0 < 0) x0 = 0;
   if (y0 < 0) y0 = 0;
   if (z0 < 0) z0 = 0;
-  if (x0 > (COLUMNS-1)) x0 = COLUMNS-1;
+  if (x0 > (SLICES-1)) x0 = SLICES-1;
   if (y0 > (ROWS-1)) y0 = ROWS-1;
-  if (z0 > (SLICES-1)) z0 = SLICES-1;
+  if (z0 > (COLUMNS-1)) z0 = COLUMNS-1;
 
   int x1 = x0 + 1;
   int y1 = y0 + 1;
@@ -370,8 +592,10 @@ __kernel void identity(
 
   // TODO: use image spacing and origin
 
-  hx[offset] = column;
+  hx[offset] = slice;
   hy[offset] = row;
-  hz[offset] = slice;
+  hz[offset] = column;
 
 }
+
+// vim: filetype=C
