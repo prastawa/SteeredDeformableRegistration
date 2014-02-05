@@ -130,8 +130,6 @@ width = n.zeros((1,), dtype=n.int32)
 width[0] = 7
 width_array = cla.to_device(queue, width)
 
-a_array.fill(0)
-
 print("a")
 print(a_array)
 

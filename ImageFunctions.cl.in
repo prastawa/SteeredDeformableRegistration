@@ -22,7 +22,7 @@
 //#define GAUSSIAN_KERNEL_SIZE %(kernelSize)d
 //#define GAUSSIAN_KERNEL_WIDTH %(kernelWidth)f
 
-#define NUM_GAUSSIAN_STEPS 5
+#define NUM_GAUSSIAN_STEPS 4
 
 //
 // Basic data management
@@ -302,8 +302,6 @@ __kernel void recursive_gaussian_x(
   __global float* img,
   __global float* sigma)
 {
-// Need to accumulate over slice...
-// working shape size???? parallelization over 2d so shape is (y, z)
   size_t column = get_global_id(1);
   size_t row = get_global_id(0);
 
@@ -312,6 +310,9 @@ __kernel void recursive_gaussian_x(
 
   size_t sliceStart = row*COLUMNS + column;
   size_t sliceEnd = (SLICES-1)*ROWS*COLUMNS + row*COLUMNS + column;
+
+  // TODO
+  //float ssigma = sigma[0] / spacing[0];
 
   float lambda = (sigma[0]*sigma[0]) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
   float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
@@ -326,6 +327,7 @@ __kernel void recursive_gaussian_x(
     {
       size_t pos = slice*ROWS*COLUMNS + sliceStart;
       size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos] += img[pos_prev] * nu;
     }
 
@@ -335,14 +337,15 @@ __kernel void recursive_gaussian_x(
     {
       size_t pos = slice*ROWS*COLUMNS + sliceStart;
       size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos_prev] += img[pos] * nu;
     }
+  }
 
-    for (size_t slice = 0; slice < SLICES; slice++)
-    {
-      size_t pos = slice*ROWS*COLUMNS + sliceStart;
-      img[pos] *= (nu / lambda);
-    }
+  for (size_t slice = 0; slice < SLICES; slice++)
+  {
+    size_t pos = slice*ROWS*COLUMNS + sliceStart;
+    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -356,6 +359,9 @@ __kernel void recursive_gaussian_y(
 
   if (slice >= SLICES || column >= COLUMNS)
     return;
+
+  // TODO
+  //float ssigma = sigma[0] / spacing[1];
 
   size_t rowStart = slice*ROWS*COLUMNS + column;
   size_t rowEnd = slice*ROWS*COLUMNS + (ROWS-1)*COLUMNS + column;
@@ -373,6 +379,7 @@ __kernel void recursive_gaussian_y(
     {
       size_t pos = row*COLUMNS + rowStart;
       size_t pos_prev = (row-1)*COLUMNS + rowStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos] += img[pos_prev] * nu;
     }
 
@@ -382,14 +389,15 @@ __kernel void recursive_gaussian_y(
     {
       size_t pos = row*COLUMNS + rowStart;
       size_t pos_prev = (row-1)*COLUMNS + rowStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos_prev] += img[pos] * nu;
     }
+  }
 
-    for (size_t row = 0; row < ROWS; row++)
-    {
-      size_t pos = row*COLUMNS + rowStart;
-      img[pos] *= (nu / lambda);
-    }
+  for (size_t row = 0; row < ROWS; row++)
+  {
+    size_t pos = row*COLUMNS + rowStart;
+    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -403,6 +411,9 @@ __kernel void recursive_gaussian_z(
 
   if (slice >= SLICES || row >= ROWS)
     return;
+
+  // TODO
+  //float ssigma = sigma[0] / spacing[2];
 
   size_t columnStart = slice*ROWS*COLUMNS + row*COLUMNS;
   size_t columnEnd = slice*ROWS*COLUMNS + row*COLUMNS + COLUMNS-1;
@@ -420,6 +431,7 @@ __kernel void recursive_gaussian_z(
     {
       size_t pos = column + columnStart;
       size_t pos_prev = (column-1) + columnStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos] += img[pos_prev] * nu;
     }
 
@@ -429,14 +441,15 @@ __kernel void recursive_gaussian_z(
     {
       size_t pos = column + columnStart;
       size_t pos_prev = (column-1) + columnStart;
+      //barrier(CLK_GLOBAL_MEM_FENCE);
       img[pos_prev] += img[pos] * nu;
     }
+  }
 
-    for (size_t column = 0; column < COLUMNS; column++)
-    {
-      size_t pos = column + columnStart;
-      img[pos] *= (nu / lambda);
-    }
+  for (size_t column = 0; column < COLUMNS; column++)
+  {
+    size_t pos = column + columnStart;
+    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -493,6 +506,7 @@ __kernel void gradient(
 
 __kernel void interpolate(
   __global float* src,
+  __global float* spacing,
   __global float* hx,
   __global float* hy,
   __global float* hz,
@@ -510,9 +524,10 @@ __kernel void interpolate(
   // TODO Convert to voxel coordinate
 // TODO use origin and oriented spacing , from orientMat * spacing?
 // TODO make sure all inputs are converted to axial orient with non-neg spacings beforehand
-  float x = hx[offset];
-  float y = hy[offset];
-  float z = hz[offset];
+
+  float x = hx[offset] / spacing[0];
+  float y = hy[offset] / spacing[1];
+  float z = hz[offset] / spacing[2];
 
 /*
   // Nearest neighbor
@@ -577,6 +592,7 @@ __kernel void interpolate(
 //
 
 __kernel void identity(
+  __global float* spacing,
   __global float* hx,
   __global float* hy,
   __global float* hz)
@@ -591,11 +607,35 @@ __kernel void identity(
   size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   // TODO: use image spacing and origin
+  // orient? assume already axial
+  //hx[offset] = slice * spacing[0] + origin[0];
+  //hy[offset] = row * spacing[1] + origin[1];
+  //hz[offset] = column * spacing[2] + origin[2];
 
-  hx[offset] = slice;
-  hy[offset] = row;
-  hz[offset] = column;
+  hx[offset] = slice * spacing[0];
+  hy[offset] = row * spacing[1];
+  hz[offset] = column * spacing[2];
 
+}
+
+__kernel void identity_resampled(
+  __global float* outspacing,
+  __global int* outsize,
+  __global float* hx,
+  __global float* hy,
+  __global float* hz)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  //if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
+  if (slice >= outsize[0] || row >= outsize[1] || column >= outsize[2])
+    return;
+
+  hx[offset] = slice * outspacing[0];
+  hy[offset] = row * outspacing[1];
+  hz[offset] = column * outspacing[2];
 }
 
 // vim: filetype=C

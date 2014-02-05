@@ -7,9 +7,11 @@ import SimpleITK as sitk
 import sitkUtils
 import Queue
 
+################################################################################
 #
-# CL classes
+# CL support classes
 #
+################################################################################
 
 import pyopencl as cl
 import pyopencl.array as cla
@@ -18,51 +20,19 @@ import numpy as n
 #
 # ImageCL
 #
-# Wrapper for Slicer volume node, adding support for basic image operations
+# Adds support for image registration operations to Slicer image data
 # using PyOpenCL
-#
-# Supports: convolve, grad, add, mul, sub, etc
 #
 
 class ImageCL:
-  def __init__(self, clqueue, volume, makeAxial=False):
-
-    # TODO: only have image info (origin, spacing, orient) and VTK volume?
-    # do not keep copies of volume nodes -> issues, clashing names???
-    # rename to ImageCL convert from VolumeNode -> CL then can get vtkImageData
+  def __init__(self, clqueue, volume):
 
     self.inputVolume = volume
-
-    tempVolume = volume
-
-# TODO move reorientation outside of ImageCL to make sure only done at beginning
-    # Reorient volume to axial if requested
-    if makeAxial:
-
-      nodeName = slicer.mrmlScene.GetUniqueNameByString(volume.GetName())
-
-      vl = slicer.modules.volumes.logic()
-      tempVolume = vl.CloneVolume(slicer.mrmlScene, volume, nodeName)
-      tempVolume.SetName(nodeName)
-
-      slicer.mrmlScene.AddNode(tempVolume)
-
-      cliparams = {}
-      cliparams["orientation"] = "Axial"
-      cliparams["inputVolume1"] = volume.GetID()
-      cliparams["outputVolume"] = tempVolume.GetID()
-
-      print "Axial reorientation of " + volume.GetID() + " to " + tempVolume.GetID()
-
-      slicer.cli.run(slicer.modules.orientscalarvolume, None,
-        cliparams, wait_for_completion=True)
-
-      self.image = tempVolume.GetImageData()
 
     # Cast to float
     castf = vtk.vtkImageCast()
     castf.SetOutputScalarTypeToFloat()
-    castf.SetInput( tempVolume.GetImageData() )
+    castf.SetInput( volume.GetImageData() )
     castf.Update()
 
     # Avoid pointer issue with VTK filter output
@@ -73,10 +43,10 @@ class ImageCL:
     self.shape = list(self.image.GetDimensions())
     self.shape.reverse()
 
-    self.origin = list(tempVolume.GetOrigin())
+    self.origin = list(volume.GetOrigin())
     self.origin.reverse()
 
-    self.spacing = list(tempVolume.GetSpacing())
+    self.spacing = list(volume.GetSpacing())
     self.spacing.reverse()
 
     # Store original orientation in case need to map back
@@ -115,28 +85,31 @@ class ImageCL:
 
     self.clprogram = cl.Program(self.clqueue.context, source).build()
 
-    # Delete reoriented volume if needed
-    if makeAxial:
-      slicer.mrmlScene.RemoveNode(tempVolume)
-      #tempVolume.UnRegister(slicer.mrmlScene)
-      tempVolume = None
-
     # TODO: maintain modification flags for host and dev memory
     # use them to sync as needed
 
   def __del__(self):
-    self.clarray = None
     self.inputVolume = None
 
+    self.clarray = None
+    self.image = None
+
   def clone(self):
-    outvol = ImageCL(self.clqueue, self.inputVolume, False)
+    outimgcl = ImageCL(self.clqueue, self.inputVolume)
     # Always assume that CL memory is the one up-to-date
-    outvol.clarray = self.clarray.copy()
-    return outvol
+    outimgcl.clarray = self.clarray.copy()
+    return outimgcl
 
   def fill(self, value):
     self.image.GetPointData().GetScalars().FillComponent(0, value)
     self.clarray.fill(value)
+
+# TODO do downsampling/upsampling when mapping to/from device?
+# have an option flag
+# if true
+# downsample when sync_dev
+# upsample when sync_host
+# NO, do it as part of DeformationCL
 
   def sync_dev(self):
     #revshape = list(self.shape)
@@ -167,9 +140,22 @@ class ImageCL:
     self.image.DeepCopy(castf.GetOutput())
 
   def normalize(self):
-    narray = self.clarray.get()
-    minp = narray.min()
-    maxp = narray.max()
+
+    # Brute force CPU approach
+    #narray = self.clarray.get()
+    #minp = narray.min()
+    #maxp = narray.max()
+
+    # NOTE: this may not work on Nvidia and Windows, due to space in header
+    # include location
+    # WORKAROUND: edit Slicer/lib/Python/Lib/site-packages/pyopencl/reduction.py
+    # and insert code from cl/pyopencl-complex.h manually
+    clminp = cl.array.min(self.clarray, self.clqueue)
+    clmaxp = cl.array.max(self.clarray, self.clqueue)
+    # Convert reductions to scalars
+    minp = clminp.get()[()]
+    maxp = clmaxp.get()[()]
+
     range = maxp - minp
     if range > 0.0:
       self.clarray -= minp
@@ -181,22 +167,22 @@ class ImageCL:
     #self.sync_host()
     
   def add(self, otherimgcl):
-    outvol = self.clone()
-    outvol.clarray = self.clarray + otherimgcl.clarray
-    #outvol.sync_host()
-    return outvol
+    outimgcl = self.clone()
+    outimgcl.clarray = self.clarray + otherimgcl.clarray
+    #outimgcl.sync_host()
+    return outimgcl
     
   def subtract(self, otherimgcl):
-    outvol = self.clone()
-    outvol.clarray = self.clarray - otherimgcl.clarray
-    #outvol.sync_host()
-    return outvol
+    outimgcl = self.clone()
+    outimgcl.clarray = self.clarray - otherimgcl.clarray
+    #outimgcl.sync_host()
+    return outimgcl
     
   def multiply(self, otherimgcl):
-    outvol = self.clone()
-    outvol.clarray = self.clarray * otherimgcl.clarray
-    #outvol.sync_host()
-    return outvol
+    outimgcl = self.clone()
+    outimgcl.clarray = self.clarray * otherimgcl.clarray
+    #outimgcl.sync_host()
+    return outimgcl
 
   def add_inplace(self, otherimgcl):
     self.clarray += otherimgcl.clarray
@@ -213,36 +199,54 @@ class ImageCL:
     #self.sync_host()
     return self
 
+  def minmax(self):
+    #TODO
+    #use cl.reduction.ReductionKernel
+    #https://github.com/pyopencl/pyopencl/blob/master/examples/demo-struct-reduce.py
+    pass
+
   def min(self):
-    return self.clarray.get().min()
+    #return self.clarray.get().min()
+
+    # NOTE: see note on normalize()
+    clminp = cl.array.min(self.clarray, self.clqueue)
+    minp = clminp.get()[()]
+    return minp
 
   def max(self):
-    return self.clarray.get().max()
+    #return self.clarray.get().max()
+
+    # NOTE: see note on normalize()
+    clmaxp = cl.array.max(self.clarray, self.clqueue)
+    maxp = clmaxp.get()[()]
+    return maxp
 
   def getVolumeInOriginalOrientation(self):
     # Get data in original input orientation (for display purposes?)
     # NOTE: may not be necessary if Slicer reslices everything properly
     # TODO
 
-    outVolumeNode = slicer.vtkMRMLScalarVolumeNode()
-    outVolumeNode.Copy(self.volumeNode)
+    outimgclumeNode = slicer.vtkMRMLScalarVolumeNode()
+    outimgclumeNode.Copy(self.volumeNode)
 
     cliparams = {}
     cliparams["orientation"] = self.originalOrientation
     cliparams["inputVolume1"] = self.volumeNode.GetID()
-    cliparams["outputVolume"] = outVolumeNode.GetID()
+    cliparams["outputVolume"] = outimgclumeNode.GetID()
 
     slicer.cli.run(slicer.modules.orientscalarvolume, None,
       cliparams, wait_for_completion=True)
 
-    return outVolumeNode
+    return outimgclumeNode
 
   def gradient(self):
     gradx = self.clone()
     grady = self.clone()
     gradz = self.clone()
 
-    self.clprogram.gradient(self.clqueue, self.shape, None, self.clarray.data,  gradx.clarray.data, grady.clarray.data, gradz.clarray.data).wait()
+    self.clprogram.gradient(self.clqueue, self.shape, None,
+      self.clarray.data,
+      gradx.clarray.data, grady.clarray.data, gradz.clarray.data).wait()
 
     # TODO: skip memory transfer until needed
     # restrict access using getVolumeNode()?
@@ -258,29 +262,29 @@ class ImageCL:
 
     [gx, gy, gz] = self.gradient()
     mag = gx.multiply(gx)
-    mag = mag.add(gy.multiply(gy))
-    mag = mag.add(gz.multiply(gz))
+    mag.add_inplace(gy.multiply(gy))
+    mag.add_inplace(gz.multiply(gz))
 
     del gx, gy, gz
 
     return mag
 
-  def gaussian(self, kernelwidth, kernelsize):
-    outvol = self.clone()
+  def gaussian(self, kernelwidth):
+    outimgcl = self.clone()
 
     """ 
     var = n.zeros((1,), dtype=n.float32)
     var[0] = kernelwidth * kernelwidth
     var_array = cla.to_device(self.clqueue, var)
     width = n.zeros((1,), dtype=n.int32)
-    width[0] = kernelsize
+    width[0] = floor(kernelwidth * 3 + 1)
     width_array = cla.to_device(self.clqueue, width)
 
-    tempclarray = outvol.clarray.copy()
+    tempclarray = outimgcl.clarray.copy()
 
-    self.clprogram.gaussian_x(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outvol.clarray.data).wait()
-    self.clprogram.gaussian_y(self.clqueue, self.shape, None, outvol.clarray.data, var_array.data,  width_array.data, tempclarray.data).wait()
-    self.clprogram.gaussian_z(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outvol.clarray.data).wait()
+    self.clprogram.gaussian_x(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outimgcl.clarray.data).wait()
+    self.clprogram.gaussian_y(self.clqueue, self.shape, None, outimgcl.clarray.data, var_array.data,  width_array.data, tempclarray.data).wait()
+    self.clprogram.gaussian_z(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outimgcl.clarray.data).wait()
     """ 
 
     sigma = n.zeros((1,), dtype=n.float32)
@@ -291,44 +295,144 @@ class ImageCL:
     sizeY = self.shape[1]
     sizeZ = self.shape[2]
 
-    outvol.clprogram.recursive_gaussian_z(outvol.clqueue, (sizeX, sizeY), None,
-      outvol.clarray.data, sigma_array.data).wait()
-    outvol.clprogram.recursive_gaussian_y(outvol.clqueue, (sizeX, sizeZ), None,
-      outvol.clarray.data, sigma_array.data).wait()
-    outvol.clprogram.recursive_gaussian_x(outvol.clqueue, (sizeY, sizeZ), None,
-      outvol.clarray.data, sigma_array.data).wait()
+    sigma_array[0] = kernelwidth / self.spacing[2]
+    outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
+      (sizeX, sizeY), None,
+      outimgcl.clarray.data, sigma_array.data).wait()
+    sigma_array[0] = kernelwidth / self.spacing[1]
+    outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
+      (sizeX, sizeZ), None,
+      outimgcl.clarray.data, sigma_array.data).wait()
+    sigma_array[0] = kernelwidth / self.spacing[0]
+    outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
+      (sizeY, sizeZ), None,
+      outimgcl.clarray.data, sigma_array.data).wait()
 
     # Keep memory in CL device and host synchronized
-    #outvol.sync_host()
+    #outimgcl.sync_host()
     
-    return outvol
+    return outimgcl
+
+  def resample(self, targetShape):
+
+    # TODO do some filtering if downsampling?
+    """
+    isDownsampling = False
+    for dim in xrange(3):
+      if targetShape[dim] <= self.shape[dim] / 2:
+	isDownsampling = True
+	break
+    if isDownsampling:
+      smoothimgcl = self.gaussian(1.0)
+    """
+
+    """
+    outimgcl = self.clone()
+
+    outspacing = list(self.spacing)
+    for dim in xrange(3):
+      outspacing[dim] = (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
+
+    outimgcl.shape = targetShape
+    outimgcl.spacing = outspacing
+
+    # Resize cl array and vtk image
+    outimgcl.clarray = cl.array.zeros(self.queue, targetShape, n.float32)
+    outimgcl.image.SetExtent(
+      0, targetShape[2]-1, 0, targetShape[1]-1, 0, targetShape[0]-1)
+
+    nspacing = n.zeros((3,), dtype=n.float32)
+    for dim in xrange(3):
+      nspacing[dim] = outspacing[dim]
+    clspacing = cla.to_device(self.clqueue, nspacing)
+
+    nsize = n.zeros((3,), dtype=n.int32)
+    for dim in xrange(3):
+      nsize[dim] = targetShape[dim]
+    clsize = cla.to_device(self.clqueue, nsize)
+
+    hxclarray = cl.array.zeros_like(outimgcl.clarray)
+    hyclarray = cl.array.zeros_like(outimgcl.clarray)
+    hzclarray = cl.array.zeros_like(outimgcl.clarray)
+
+    self.clprogram.identity_resampled(self.clqueue, targetShape, None,
+      clspacing.data, clsize.data,
+      hxclarray.data,  hyclarray.data, hzclarray.data).wait()
+    
+#TODO: different size arrays in interpolate
+# out size = h size, specified in args
+# kernel work size use out size
+# source always the orig size
+    self.clprogram.interpolate(self.clqueue, targetShape, None,
+      self.clarray.data,
+      clspacing.data, clsize.data,
+      hxclarray.data, hyclarray.data, hzclarray.data,
+      outimgcl.clarray.data).wait()
+
+    """
+
+    # CPU
+    outimgcl = self.clone()
+
+    self.sync_host()
+
+    outspacing = list(self.spacing)
+    for dim in xrange(3):
+      outspacing[dim] = (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
+
+    outimgcl.shape = targetShape
+    outimgcl.spacing = outspacing
+
+    resizef = vtk.vtkImageResize()
+    resizef.SetResizeMethodToOutputDimensions()
+    resizef.SetOutputDimensions(targetShape[2], targetShape[1], targetShape[0])
+    resizef.SetInput(self.image)
+    resizef.Update()
+
+    # Workaround for VTK memory leak bug
+    outimgcl.image = vtk.vtkImageData()
+    outimgcl.image.DeepCopy(resizef.GetOutput())
+
+    self.sync_dev()
+
+    return outimgcl
 
 #
 # DeformationCL
 #
-# Wrapper for a list of 3 ImageCL objects containing deformation maps h
+# Represent deformation maph using a list of 3 ImageCL objects
 # with support for composition (h1 \circ h2), and warping of scalar volumes
 #
 # Warping is applied as Iwarped = I(h)
 #
 class DeformationCL:
 
-  def __init__(self, sampleimgcl):
-    self.hx = sampleimgcl.clone()
-    self.hy = sampleimgcl.clone()
-    self.hz = sampleimgcl.clone()
+  def __init__(self, sampleimgcl, hlist=None):
+
+    self.imgcl = sampleimgcl
 
     self.clqueue = sampleimgcl.clqueue
     self.clprogram = sampleimgcl.clprogram
 
-    self.volcl = sampleimgcl
+    if hlist is None:
+      # Assign identity mapping if mapping not specified at init
+      self.hx = sampleimgcl.clone()
+      self.hy = sampleimgcl.clone()
+      self.hz = sampleimgcl.clone()
+      self.set_identity()
+    else:
+      self.hx = hlist[0]
+      self.hy = hlist[1]
+      self.hz = hlist[2]
 
-    self.set_identity()
+  def __del__(self):
+    self.hx = None
+    self.hy = None
+    self.hz = None
 
   def clone(self):
-    copydef = DeformationCL(self.volcl)
-    copydef.set_mapping(self.hx.clone(), self.hy.clone(), self.hz.clone())
-    return copydef
+    hcopies = [self.hx.clone(), self.hy.clone(), self.hz.clone()]
+    return DeformationCL(self.imgcl, hcopies)
 
   def set_mapping(self, hx, hy, hz):
     self.hx = hx
@@ -337,58 +441,71 @@ class DeformationCL:
     self.clqueue = self.hx.clqueue
     self.clprogram = self.hx.clprogram
 
-  def __del__(self):
-    del self.hx
-    del self.hy
-    del self.hz
-
   def sync_host(self):
     self.hx.sync_host()
     self.hy.sync_host()
     self.hz.sync_host()
 
   def set_identity(self):
-    self.clprogram.identity(self.clqueue, self.hx.shape, None, self.hx.clarray.data,  self.hy.clarray.data, self.hz.clarray.data).wait()
+
+    s = n.zeros((3,), dtype=n.float32)
+    for dim in xrange(3):
+      s[dim] = self.hx.spacing[dim]
+    clspacing = cla.to_device(self.clqueue, s)
+
+    self.clprogram.identity(self.clqueue, self.hx.shape, None,
+      clspacing.data,
+      self.hx.clarray.data,  self.hy.clarray.data, self.hz.clarray.data).wait()
     #self.sync_host()
 
   def add_velocity(self, velocList):
-    newhx = self.hx.add(velocList[0])
-    newhy = self.hy.add(velocList[1])
-    newhz = self.hz.add(velocList[2])
-
-    outdef = DeformationCL(self.volcl)
-    outdef.set_mapping(newhx, newhy, newhz)
-    return outdef
+    self.hx.add_inplace(velocList[0])
+    self.hy.add_inplace(velocList[1])
+    self.hz.add_inplace(velocList[2])
 
   def maxMagnitude(self):
-    #magVol = self.hx.multiply(self.hx)
-    #magVol = magVol.add( self.hy.multiply(self.hy) )
-    #magVol = magVol.add( self.hz.multiply(self.hz) )
-    #return math.sqrt( magVol.max() )
+    magimg = self.hx.multiply(self.hx)
+    magimg.add_inplace( self.hy.multiply(self.hy) )
+    magimg.add_inplace( self.hz.multiply(self.hz) )
+    return math.sqrt( magimg.max() )
 
-    magVol = self.hx.clarray * self.hx.clarray
-    magVol += self.hy.clarray * self.hy.clarray
-    magVol += self.hz.clarray * self.hz.clarray
-    return math.sqrt( magVol.get().max() )
+  def resample(self, targetShape):
+    self.hx = self.hx.resample(targetShape)
+    self.hy = self.hx.resample(targetShape)
+    self.hz = self.hx.resample(targetShape)
 
   def applyTo(self, vol):
-    outvol = vol.clone()
+    outimgcl = self.hx.clone()
+
+    s = n.zeros((3,), dtype=n.float32)
+    for dim in xrange(3):
+      s[dim] = vol.spacing[dim]
+    clspacing = cla.to_device(self.clqueue, s)
+
+    # TODO: pass hx size to interp
     
-    self.clprogram.interpolate(self.hx.clqueue, self.hx.shape, None, vol.clarray.data, self.hx.clarray.data, self.hy.clarray.data, self.hz.clarray.data, outvol.clarray.data).wait()
+    self.clprogram.interpolate(vol.clqueue, self.hx.shape, None,
+      vol.clarray.data,
+      clspacing.data, clsize.data,
+      self.hx.clarray.data, self.hy.clarray.data, self.hz.clarray.data,
+      outimgcl.clarray.data).wait()
 
     # Keep memory in CL and host synchronized
-    #outvol.sync_host()
+    #outimgcl.sync_host()
     
-    return outvol
+    return outimgcl
 
   def compose(self, otherdef):
-    newhx = otherdef.applyTo(self.hx)
-    newhy = otherdef.applyTo(self.hy)
-    newhz = otherdef.applyTo(self.hz)
+    hx_new = otherdef.applyTo(self.hx)
+    hy_new = otherdef.applyTo(self.hy)
+    hz_new = otherdef.applyTo(self.hz)
 
-    outdef = DeformationCL(self.volcl)
-    outdef.set_mapping(newhx, newhy, newhz)
-    return outdef
+    H_new = [hx_new, hy_new, hz_new]
+
+    return DeformationCL(self.imgcl, H_new)
+
+# TODO add support for downsampling and upsampling
+# first in ImageCL then here as well
 
 # TODO ???
 # At initialization, invoke affine registration using CLI module:
@@ -420,9 +537,11 @@ class SteeredFluidReg:
 """ # replace with organization, grant and thanks.
     self.parent = parent
 
+################################################################################
 #
 # SteeredFluidRegWidget
 #
+################################################################################
 
 class SteeredFluidRegWidget:
   def __init__(self, parent = None):
@@ -438,11 +557,8 @@ class SteeredFluidRegWidget:
       self.parent.show()
 
     self.logic = SteeredFluidRegLogic()
+
     self.interaction = False
-    
-    self.momentas = []
-    
-    self.threadLock = threading.Lock()
     
 ##    self.parameterNode = None
 ##    self.parameterNodeTag = None
@@ -653,8 +769,12 @@ class SteeredFluidRegWidget:
 
 
   def updateLogicFromGUI(self,args):
-    self.logic.fixed = self.fixedSelector.currentNode()
-    self.logic.moving = self.movingSelector.currentNode()
+
+    # Handled by logic on start
+    #self.logic.useFixedVolume(self.fixedSelector.currentNode())
+    #self.logic.useMovingVolume(self.movingSelector.currentNode())
+
+    #TODO
     # self.logic.transform = self.transformSelector.currentNode()
 
     # TODO: hook with grid transform, for now just update background image from GPU
@@ -668,6 +788,9 @@ class SteeredFluidRegWidget:
  
           
   def onResetButtonToggled(self):
+    #TODO
+    #self.logic.reset()
+
     self.logic.actionState = "reset"
 
     # Set momentas to zero, copy moving to output
@@ -681,6 +804,8 @@ class SteeredFluidRegWidget:
     if checked:
       self.regButton.text = "Stop"
 
+      self.logic.automaticRegistration = True
+
       layoutManager = slicer.app.layoutManager()
       layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutThreeOverThreeView)
       
@@ -689,11 +814,11 @@ class SteeredFluidRegWidget:
       movingVolume = self.movingSelector.currentNode()
       outputVolume = self.outputSelector.currentNode()
 
-      self.fixedImageCL = ImageCL(self.logic.clQueue, fixedVolume, False)
-      self.fixedImageCL.normalize()
+      self.logic.useFixedVolume(fixedVolume)
+      self.logic.useMovingVolume(movingVolume)
 
-      self.movingImageCL = ImageCL(self.logic.clQueue, movingVolume, False)
-      self.movingImageCL.normalize()
+      # Initialize output using moving volume
+      self.logic.initOutputVolume(outputVolume)
 
       #cool1 = slicer.vtkMRMLColorTableNode()
       #cool1.SetTypeToCool1()
@@ -703,72 +828,17 @@ class SteeredFluidRegWidget:
       #warm1.SetTypeToWarm1()
       #movingVolume.GetScene().AddNode(warm1)
 
-      fixedDisplay = fixedVolume.GetDisplayNode()
+      #fixedDisplay = fixedVolume.GetDisplayNode()
       #fixedDisplay.SetAndObserveColorNodeID(cool1.GetID())
 
-      movingDisplay = movingVolume.GetDisplayNode()
+      #movingDisplay = movingVolume.GetDisplayNode()
       #movingDisplay.SetAndObserveColorNodeID(warm1.GetID())
       
-      # NOTE: Reuse old result?
-      # TODO: need to store old deformation for this to work, for now reset everything
-      # if outputVolume is None:
-        # vl = slicer.modules.volumes.logic()
-        # outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
-        # self.outputSelector.setCurrentNode(outputVolume)
-      # else:
-        # # Disabled to allow pausing and unpausing
-        # # TODO DEBUG
-        # #movingArray = slicer.util.array(movingVolume.GetName())
-        # #outputArray = slicer.util.array(outputVolume.GetName())
-        # #outputArray[:] = movingArray[:]
-        # pass
-      
-      if outputVolume is None:
-        vl = slicer.modules.volumes.logic()
-# TODO need to use reoriented volume
-# TODO move reorientation out of ImageCL, keep reoriented?Volume variables instead
-        outputVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "steered-warped")
-        self.outputSelector.setCurrentNode(outputVolume)
-      else:
-        outputImage = vtk.vtkImageData()
-        outputImage.DeepCopy(movingVolume.GetImageData())
-        #outputImage.GetPointData().SetScalars(movingVolume.GetImageData().GetPointData().GetScalars())
-        outputVolume.SetAndObserveImageData(outputImage)
-
-      self.outputImageCL = ImageCL(self.logic.clQueue, outputVolume, False)
-      self.outputImageCL.normalize()
-        
-      # Force update of gradient magnitude image
-      self.updateOutputVolume( self.outputImageCL )
-
-      # TODO DEBUG
-      # Propagate image information to image data structures?
-      #fixedVolume.GetImageData().SetOrigin( fixedVolume.GetOrigin() )
-      #fixedVolume.GetImageData().SetSpacing( fixedVolume.GetSpacing() )
-      #movingVolume.GetImageData().SetOrigin( movingVolume.GetOrigin() )
-      #movingVolume.GetImageData().SetSpacing( movingVolume.GetSpacing() )
-      #outputVolume.GetImageData().SetOrigin( outputVolume.GetOrigin() )
-      #outputVolume.GetImageData().SetSpacing( outputVolume.GetSpacing() )
-      
-      orig = movingVolume.GetImageData().GetOrigin()
-      sp = movingVolume.GetImageData().GetSpacing()
-      print "Call build id with orig = " + str(orig) + " sp = " + str(sp)
-
       # TODO: move parts to startDeformableReg()
-      
-      # Zero displacement
-      self.displacement = [None, None, None]
-      for dim in xrange(3):
-        castf = vtk.vtkImageCast()
-        castf.SetOutputScalarTypeToDouble()
-        castf.SetInput(movingVolume.GetImageData())
-        castf.Update()
 
-        disp = vtk.vtkImageData()
-        disp.DeepCopy( castf.GetOutput() )
-        disp.GetPointData().GetScalars().FillComponent(0, 0.0)
-        self.displacement[dim] = disp
-
+      #orig = movingVolume.GetImageData().GetOrigin()
+      #sp = movingVolume.GetImageData().GetSpacing()
+      #print "Call build id with orig = " + str(orig) + " sp = " + str(sp)
       
       # vl = slicer.modules.volumes.logic()
       # self.gridVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "warped-grid")
@@ -785,66 +855,22 @@ class SteeredFluidRegWidget:
       # gridImage = self.buildGrid(movingVolume.GetImageData())
       # #self.gridVolume.GetImageData().GetPointData().SetScalars( gridImage.GetPointData().GetScalars() )
       # self.gridVolume.SetAndObserveImageData(gridImage)
-        
-      ii = 0
-      
-      compositeNodeDict = slicer.util.getNodes('vtkMRMLSliceCompositeNode*')
-
-      sortedKeys = sorted(compositeNodeDict.iterkeys())
-
-      for i in xrange(3):
-        compositeNode = compositeNodeDict[sortedKeys[i]]
-        compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
-        compositeNode.SetForegroundVolumeID(outputVolume.GetID())
-        compositeNode.SetForegroundOpacity(0.0)
-        compositeNode.LinkedControlOn()
-      for i in xrange(3,6):
-        compositeNode = compositeNodeDict[sortedKeys[i]]
-        compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
-        compositeNode.SetForegroundVolumeID(outputVolume.GetID())
-        compositeNode.SetForegroundOpacity(1.0)
-        compositeNode.LinkedControlOn()
-
-      #for compositeNode in compositeNodes.values():
-      #  print "Composite node " + compositeNode.GetName()
-
-      #  #compositeNode.SetLabelVolumeID(self.gridVolume.GetID())
-      #  compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
-      #  compositeNode.SetForegroundVolumeID(outputVolume.GetID())
-      #  
-      #  compositeNode.SetForegroundOpacity(0.5)
-      #  if ii == 1:
-      #    compositeNode.SetForegroundOpacity(0.0)
-      #  if ii == 0:
-      #    compositeNode.SetForegroundOpacity(1.0)
-      #  compositeNode.SetLabelOpacity(0.5)
-      #  
-      #  ii += 1
-
-      #compositeNodes.values()[0].LinkedControlOn()
-      yellowWidget = layoutManager.sliceWidget('Yellow')
-        
-      # Set all view orientation to axial
-      #sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
-      #for nodeIndex in xrange(sliceNodeCount):
-      #  sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
-      #  sliceNode.SetOrientationToAxial()
-        
-      applicationLogic = slicer.app.applicationLogic()
-      applicationLogic.FitSliceToAll()
 
       self.logic.interaction = True
-      self.logic.start()
-
       self.logic.automaticRegistration = True
+
       print('Automatic registration = %d' %(self.logic.automaticRegistration))
       
-      self.startDeformableRegistration()
+      self.logic.startSteeredRegistration()
+
     else:
+
       self.regButton.text = "Start"
+
+      self.logic.automaticRegistration = False
       
       self.logic.interaction=False
-      self.logic.stop()
+      self.logic.stopSteeredRegistration()
 
       # TODO: clear out temporary variables
 
@@ -852,28 +878,260 @@ class SteeredFluidRegWidget:
       #if(self.logic.transform is not None): 
       #  self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
       
-      self.logic.automaticRegistration = False
       print('Automatic registration = %d' %(self.logic.automaticRegistration))
+     
+  def buildGrid(self, inputImage):
+    castf = vtk.vtkImageCast()
+    castf.SetOutputScalarTypeToShort()
+    castf.SetInput(inputImage)
+    castf.Update()
+
+    #gridImage = castf.GetOutput()
+    gridImage = vtk.vtkImageData()
+    gridImage.DeepCopy(castf.GetOutput())
+    gridImage.GetPointData().GetScalars().FillComponent(0, 0)
+    
+    size = gridImage.GetDimensions()
+    
+    for i in xrange(size[0]):
+      for j in xrange(size[1]):
+        for k in xrange(size[2]):
+          if i > 0 and (i % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
+
+    for j in xrange(size[1]):
+      for i in xrange(size[0]):
+        for k in xrange(size[2]):
+          if j > 0 and (j % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
+            
+    for k in xrange(size[2]):
+      for i in xrange(size[0]):
+        for j in xrange(size[1]):
+          if k > 0 and (k % 20) < 3:
+            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
+            
+    return gridImage
+    
+  
+  #########################################################################
+  
+  def onReload(self,moduleName="SteeredFluidReg"):
+    """Generic reload method for any scripted module.
+    ModuleWizard will subsitute correct default moduleName.
+    """
+    import imp, sys, os, slicer
+
+    widgetName = moduleName + "Widget"
+
+    # reload the source code
+    # - set source file path
+    # - load the module to the global space
+    filePath = eval('slicer.modules.%s.path' % moduleName.lower())
+    p = os.path.dirname(filePath)
+    if not sys.path.__contains__(p):
+      sys.path.insert(0,p)
+    fp = open(filePath, "r")
+    globals()[moduleName] = imp.load_module(
+        moduleName, fp, filePath, ('.py', 'r', imp.PY_SOURCE))
+    fp.close()
+
+    # rebuild the widget
+    # - find and hide the existing widget
+    # - create a new widget in the existing parent
+    parent = slicer.util.findChildren(name='%s Reload' % moduleName)[0].parent()
+    for child in parent.children():
+      try:
+        child.hide()
+      except AttributeError:
+        pass
+    globals()[widgetName.lower()] = eval(
+        'globals()["%s"].%s(parent)' % (moduleName, widgetName))
+    globals()[widgetName.lower()].setup()
+
+
+################################################################################
+#
+# SteeredFluidReg logic
+#
+################################################################################
+
+class SteeredFluidRegLogic(object):
+#TODO
+  """ Implement a template matching optimizer that is
+  integrated with the slicer main loop.
+  """
+
+  def __init__(self):
+    self.interval = 1000
+    self.timer = None
+
+    # parameter defaults
+    self.regIteration = 10
+    self.viscosity = 50.0
+    self.opacity = 0.5
+
+    # TODO
+    #self.transform = ?
+
+    # optimizer state variables
+    self.iteration = 0
+    self.interaction = False
+
+    self.position = []
+    self.paintCoordinates = []
+
+    self.lastEventPosition = [0.0, 0.0, 0.0]
+    self.startEventPosition = [0.0, 0.0, 0.0]
+    
+    # Queue containing info on arrow draw events, tuples of (Mtime, xy0, RAS0, xy1, RAS1, sliceWidget)
+    self.arrowQueue = Queue.Queue()
+
+    self.arrowStartXY = (0, 0, 0)
+    self.arrowEndXY = (0, 0, 0)
+    
+    self.arrowStartRAS = [0.0, 0.0, 0.0]
+    self.arrowEndRAS = [0.0, 0.0, 0.0]
+
+    print("Reload")
+
+    self.actionState = "idle"
+    self.interactorObserverTags = []
+    
+    self.styleObserverTags = []
+    self.sliceWidgetsPerStyle = {}
+
+    self.nodeIndexPerStyle = {}
+    self.sliceNodePerStyle = {}
+    
+    self.lastDrawMTime = 0
+    self.lastDrawSliceWidget = None
+    
+    self.arrowsActor = vtk.vtkActor()
+
+    self.movingArrowActor = vtk.vtkActor()
+    self.movingContourActor = vtk.vtkActor2D()
+    #self.movingContourActor = vtk.vtkImageActor()
+    
+    self.lastHoveredGradMag = 0
+
+    preferredDeviceType = "GPU"
+
+    # TODO create cl context and queue
+    self.clContext = None
+    for platform in cl.get_platforms():
+      for device in platform.get_devices():
+        if cl.device_type.to_string(device.type) == preferredDeviceType:
+          self.clContext = cl.Context([device])
+          print ("using: %s" % cl.device_type.to_string(device.type))
+          break;
+
+    if self.clContext is None:
+      self.clContext = cl.create_some_context()
+
+    self.clqueue = cl.CommandQueue(self.clContext)
+
+    
+  def __del__(self):
+  
+    # TODO
+    # Clean up, delete line in render window
+    layoutManager = slicer.app.layoutManager()
+    sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
+    for nodeIndex in xrange(sliceNodeCount):
+      # find the widget for each node in scene
+      sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
+      sliceWidget = layoutManager.sliceWidget(sliceNode.GetLayoutName())
+      
+      if sliceWidget:
+        renwin = sliceWidget.sliceView().renderWindow()
+        rencol = renwin.GetRenderers()
+        if rencol.GetNumberOfItems() == 2:
+          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
+
+  def reorientVolumeToAxial(self, volume):
+    nodeName = slicer.mrmlScene.GetUniqueNameByString(volume.GetName())
+
+    vl = slicer.modules.volumes.logic()
+    axialVolume = vl.CloneVolume(slicer.mrmlScene, volume, nodeName)
+    axialVolume.SetName(nodeName)
+
+    slicer.mrmlScene.AddNode(axialVolume)
+
+    cliparams = {}
+    cliparams["orientation"] = "Axial"
+    cliparams["inputVolume1"] = volume.GetID()
+    cliparams["outputVolume"] = axialVolume.GetID()
+
+    print "Axial reorientation of " + volume.GetID() + " to " + axialVolume.GetID()
+
+    slicer.cli.run(slicer.modules.orientscalarvolume, None,
+      cliparams, wait_for_completion=True)
+
+    return axialVolume
+
+  def useFixedVolume(self, volume):
+    axialVolume = self.reorientVolumeToAxial(volume)
+    self.axialFixedVolume = axialVolume
+
+    self.fixedImageCL = ImageCL(self.clqueue, axialVolume)
+    self.fixedImageCL.normalize()
+
+    fixedShape_down = list(self.fixedImageCL.shape)
+    for dim in xrange(3):
+      fixedShape_down[dim] = min(fixedShape_down[dim] / 2, 32)
+    self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
+
+  def useMovingVolume(self, volume):
+    axialVolume = self.reorientVolumeToAxial(volume)
+    self.axialMovingVolume = axialVolume
+
+    self.movingImageCL = ImageCL(self.clqueue, axialVolume)
+    self.movingImageCL.normalize()
+
+  def initOutputVolume(self, outputVolume):
+    # NOTE: Reuse old result?
+    # TODO: need to store old deformation for this to work, for now reset everything
+    widget = slicer.modules.SteeredFluidRegWidget
+
+    if outputVolume is None:
+      vl = slicer.modules.volumes.logic()
+      # Use reoriented moving volume
+      outputVolume = vl.CloneVolume(slicer.mrmlScene, self.axialMovingVolume, "steered-warped")
+      widget.outputSelector.setCurrentNode(outputVolume)
+    else:
+      outputImage = vtk.vtkImageData()
+      outputImage.DeepCopy(self.axialMovingVolume.GetImageData())
+      outputVolume.SetAndObserveImageData(outputImage)
+      #TODO reuse deformation
+
+    self.outputImageCL = ImageCL(self.clqueue, outputVolume)
+    self.outputImageCL.normalize()
+        
+    # Force update of gradient magnitude image
+    self.updateOutputVolume( self.outputImageCL )
 
   def updateOutputVolume(self, imgcl):
 
     imgcl.sync_host()
 
-    outputVolume = self.outputSelector.currentNode()  
+    widget= slicer.modules.SteeredFluidRegWidget
+
+    outputVolume = widget.outputSelector.currentNode()  
   
     castf = vtk.vtkImageCast()
     castf.SetOutputScalarTypeToFloat()
     castf.SetInput(imgcl.image)
     castf.Update()
   
-    outputVolume.GetImageData().GetPointData().SetScalars( castf.GetOutput().GetPointData().GetScalars() )
-    #outputVolume.GetImageData().GetPointData().SetScalars( imgcl.image.GetPointData().GetScalars() )
+    #outputVolume.GetImageData().GetPointData().SetScalars( castf.GetOutput().GetPointData().GetScalars() )
+    outputVolume.GetImageData().GetPointData().SetScalars( imgcl.image.GetPointData().GetScalars() )
     outputVolume.GetImageData().GetPointData().GetScalars().Modified()
     outputVolume.GetImageData().Modified()
     outputVolume.Modified()
     
     gradimgcl = imgcl.gradient_magnitude()
-    # NOTE skip normalization to avoid multiple host syncs
+    # NOTE: skip normalization to avoid multiple host syncs or use reduce
     #gradimgcl.normalize()
     gradimgcl.sync_host()
 
@@ -884,37 +1142,98 @@ class SteeredFluidRegWidget:
     self.outputGradientMag.DeepCopy(gradimgcl.image)
     self.outputGradientMagMax = self.outputGradientMag.GetScalarRange()[1]
 
-  def startDeformableRegistration(self):     
-    fixedVolume = self.fixedSelector.currentNode()
-    movingVolume = self.movingSelector.currentNode()
-    outputVolume = self.outputSelector.currentNode()
-    # initialTransform = self.initialTransformSelector.currentNode()
-    # outputTransform = self.transformSelector.currentNode()
+  def startSteeredRegistration(self):
 
-    self.identityCL = DeformationCL(self.fixedImageCL)
-    self.deformationCL = self.identityCL
- 
-    vl = slicer.modules.volumes.logic()
+    widget= slicer.modules.SteeredFluidRegWidget
+
+    fixedVolume = widget.fixedSelector.currentNode()  
+    movingVolume = widget.movingSelector.currentNode()  
+    outputVolume = widget.outputSelector.currentNode()  
+
+    #print(self.identity)            
+    self.removeObservers()
+    # get new slice nodes
+    layoutManager = slicer.app.layoutManager()
+    sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
+    for nodeIndex in xrange(sliceNodeCount):
+      # find the widget for each node in scene
+      sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
+      sliceWidget = layoutManager.sliceWidget(sliceNode.GetLayoutName())
+      
+      if sliceWidget:
+          
+        # add observers and keep track of tags
+        style = sliceWidget.sliceView().interactorStyle()
+        self.interactor = style.GetInteractor()
+        self.sliceWidgetsPerStyle[self.interactor] = sliceWidget
+        self.nodeIndexPerStyle[self.interactor] = nodeIndex
+        self.sliceNodePerStyle[self.interactor] = sliceNode
+        
+        events = ( "LeftButtonPressEvent","LeftButtonReleaseEvent","MouseMoveEvent", "KeyPressEvent","EnterEvent", "LeaveEvent" )
+        for event in events:
+          tag = self.interactor.AddObserver(event, self.processEvent, 1.0)
+          self.interactorObserverTags.append(tag)
+      
+    compositeNodeDict = slicer.util.getNodes('vtkMRMLSliceCompositeNode*')
+
+    sortedKeys = sorted(compositeNodeDict.iterkeys())
+
+    for i in xrange(3):
+      compositeNode = compositeNodeDict[sortedKeys[i]]
+      compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
+      compositeNode.SetForegroundVolumeID(outputVolume.GetID())
+      compositeNode.SetForegroundOpacity(0.0)
+      compositeNode.LinkedControlOn()
+    for i in xrange(3,6):
+      compositeNode = compositeNodeDict[sortedKeys[i]]
+      compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
+      compositeNode.SetForegroundVolumeID(outputVolume.GetID())
+      compositeNode.SetForegroundOpacity(1.0)
+      compositeNode.LinkedControlOn()
+
+    #ii = 0
+    #for compositeNode in compositeNodes.values():
+    #  print "Composite node " + compositeNode.GetName()
+    #  #compositeNode.SetLabelVolumeID(self.gridVolume.GetID())
+    #  compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
+    #  compositeNode.SetForegroundVolumeID(outputVolume.GetID())
+    #  
+    #  compositeNode.SetForegroundOpacity(0.5)
+    #  if ii == 1:
+    #    compositeNode.SetForegroundOpacity(0.0)
+    #  if ii == 0:
+    #    compositeNode.SetForegroundOpacity(1.0)
+    #  compositeNode.SetLabelOpacity(0.5)
+    #  
+    #  ii += 1
+
+    #compositeNodes.values()[0].LinkedControlOn()
+    yellowWidget = layoutManager.sliceWidget('Yellow')
+      
+    # Set all view orientation to axial
+    #sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
+    #for nodeIndex in xrange(sliceNodeCount):
+    #  sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
+    #  sliceNode.SetOrientationToAxial()
+      
+    applicationLogic = slicer.app.applicationLogic()
+    applicationLogic.FitSliceToAll()
     
-    self.parameters = {}
-    # self.parameters['InitialTransform'] = initialTransform.GetID()
-    self.parameters['FixedImageFileName'] = fixedVolume.GetID()
-    self.parameters['MovingImageFileName'] = movingVolume.GetID()
-    # self.parameters['OutputTransform'] = outputTransform.GetID()
-    #self.parameters['ResampledImageFileName'] = outputVolume.GetID()
+    self.threadLock = threading.Lock()
 
-    self.parameters['Iterations']=self.regIterationSlider.value
-
-    # TODO put fluid stuff in logic?
+    self.deformationCL = DeformationCL(self.fixedImageCL)
     
     self.fluidDelta = 0.0
-
-    print('registration begin')
-    print "return result every %d iterations" %(self.regIterationSlider.value)
     
-    self.interval = 1000
     self.registrationIterationNumber = 0;
     qt.QTimer.singleShot(self.interval, self.updateStep)       
+          
+  def stopSteeredRegistration(self):
+    slicer.mrmlScene.RemoveNode(self.axialFixedVolume)
+    slicer.mrmlScene.RemoveNode(self.axialMovingVolume)
+
+    self.actionState = "idle"
+    self.removeObservers()
 
   def updateStep(self):
   
@@ -924,12 +1243,13 @@ class SteeredFluidRegWidget:
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registering iteration %d' %(self.registrationIterationNumber))
     
+    # TODO break down into computeImageMomenta, addUserControl, deformImages
     self.fluidUpdate()
    
-    self.logic.redrawSlices()
+    self.redrawSlices()
 
     # Initiate another iteration of the registration algorithm.
-    if self.logic.interaction:
+    if self.interaction:
       qt.QTimer.singleShot(self.interval, self.updateStep)
       
     self.threadLock.release()
@@ -954,15 +1274,21 @@ class SteeredFluidRegWidget:
     
     # Add user inputs to momentum vectors
     # User defined impulses are in arrow queue containing xy, RAS, slice widget
-    if not self.logic.arrowQueue.empty():
+    if not self.arrowQueue.empty():
+#TODO convert arrow queue to cl matrix
+# write GPU kernel to insert them into mom images
+# need rastoijk matrix
 
-      fixedVolume = self.fixedSelector.currentNode()
+      # TODO use axial reoriented fixed volume, skip using RAS matrix?
+      widget= slicer.modules.SteeredFluidRegWidget
+
+      fixedVolume = widget.fixedSelector.currentNode()
 
       imageSize = fixedVolume.GetImageData().GetDimensions()
 
       isArrowUsed = True
     
-      arrowTuple = self.logic.arrowQueue.get()
+      arrowTuple = self.arrowQueue.get()
       
       print "arrowTuple = " + str(arrowTuple)
       
@@ -982,8 +1308,9 @@ class SteeredFluidRegWidget:
       #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
 
       # for mapping drawn force to image grid
+      # TODO use axial reoriented moving volume, skip using RAS matrix?
       movingRAStoIJK = vtk.vtkMatrix4x4()
-      self.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
+      widget.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
   
       startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
       endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
@@ -1057,17 +1384,18 @@ class SteeredFluidRegWidget:
               
     velocitiesCL = [None, None, None]
     for dim in xrange(3):
-      print "mom min = " + str(momentasCL[dim].min())
-      print "mom max = " + str(momentasCL[dim].max())
-      velocitiesCL[dim] = momentasCL[dim].gaussian(10.0, 7)
-      print "vel min = " + str(velocitiesCL[dim].min())
-      print "vel max = " + str(velocitiesCL[dim].max())
+      largeV = momentasCL[dim].gaussian(15.0)
+      largeV.scale(self.viscosity)
+
+      smallV = momentasCL[dim].gaussian(5.0)
+
+      velocitiesCL[dim] = smallV
+      velocitiesCL[dim].add_inplace(largeV)
       
     # Compute max velocity
     velocMagCL = velocitiesCL[0].multiply(velocitiesCL[0])
     for dim in xrange(1,3):
-      velocMagCL = velocMagCL.add(
-        velocitiesCL[dim].multiply(velocitiesCL[dim]) )
+      velocMagCL.add_inplace(velocitiesCL[dim].multiply(velocitiesCL[dim]) )
       
     maxVeloc = velocMagCL.max()
     print "maxVeloc squared = %f" % maxVeloc
@@ -1079,8 +1407,8 @@ class SteeredFluidRegWidget:
 
     print "delta = %f" % self.fluidDelta
     
-    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 0.5:
-      self.fluidDelta = 0.5 / maxVeloc
+    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 1.0:
+      self.fluidDelta = 1.0 / maxVeloc
       print "new delta = %f" % self.fluidDelta
 
     print "maxVeloc*delta = %f" % (maxVeloc*self.fluidDelta)
@@ -1092,7 +1420,8 @@ class SteeredFluidRegWidget:
     if isArrowUsed:
       self.fluidDelta = 0.0
 
-    smallDeformationCL = self.identityCL.add_velocity(velocitiesCL)
+    smallDeformationCL = DeformationCL(self.fixedImageCL)
+    smallDeformationCL.add_velocity(velocitiesCL)
 
     self.deformationCL = self.deformationCL.compose(smallDeformationCL)
     #self.deformationCL = smallDeformationCL
@@ -1100,398 +1429,6 @@ class SteeredFluidRegWidget:
     self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
     #self.outputImageCL = self.deformationCL.applyTo(self.outputImageCL)
     self.updateOutputVolume(self.outputImageCL)
-     
-
-  def getMinMax(self, inputImage):
-    histf = vtk.vtkImageHistogramStatistics()
-    histf.SetInput(inputImage)
-    histf.Update()
-    
-    imin = histf.GetMinimum()
-    imax = histf.GetMaximum()
-    
-    return (imin, imax)
-    
-  def buildGrid(self, inputImage):
-    castf = vtk.vtkImageCast()
-    castf.SetOutputScalarTypeToShort()
-    castf.SetInput(inputImage)
-    castf.Update()
-
-    #gridImage = castf.GetOutput()
-    gridImage = vtk.vtkImageData()
-    gridImage.DeepCopy(castf.GetOutput())
-    gridImage.GetPointData().GetScalars().FillComponent(0, 0)
-    
-    size = gridImage.GetDimensions()
-    
-    for i in xrange(size[0]):
-      for j in xrange(size[1]):
-        for k in xrange(size[2]):
-          if i > 0 and (i % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-
-    for j in xrange(size[1]):
-      for i in xrange(size[0]):
-        for k in xrange(size[2]):
-          if j > 0 and (j % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-            
-    for k in xrange(size[2]):
-      for i in xrange(size[0]):
-        for j in xrange(size[1]):
-          if k > 0 and (k % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-            
-    return gridImage
-    
-  def warpImage(self, image, H):
-    # Returns I \circ H
-    
-    fixedVolume = self.fixedSelector.currentNode()
-    fixedImage = fixedVolume.GetImageData()
-    
-    appendf = vtk.vtkImageAppendComponents()
-    appendf.SetInput(H[0])
-    appendf.AddInput(H[1])
-    appendf.AddInput(H[2])
-    appendf.Update()
-    
-    gridTrafo = vtk.vtkGridTransform()
-    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
-    gridTrafo.SetDisplacementScale(1.0)
-    gridTrafo.SetDisplacementShift(0.0)
-    gridTrafo.SetInterpolationModeToCubic()
-    gridTrafo.Update()
-    
-    reslice = vtk.vtkImageReslice()
-    reslice.SetInput(image)
-    reslice.SetResliceTransform(gridTrafo)
-    reslice.SetInterpolationModeToCubic()
-    reslice.SetOutputDimensionality(3)
-    reslice.SetOutputOrigin(fixedImage.GetOrigin())
-    reslice.SetOutputSpacing(fixedImage.GetSpacing())
-    reslice.SetOutputExtent(fixedImage.GetWholeExtent())
-    reslice.SetBackgroundLevel(0)
-    reslice.SetNumberOfThreads(8)
-    reslice.Update()
-    
-    #return reslice.GetOutput()
-    warpedImage = vtk.vtkImageData()
-    warpedImage.DeepCopy(reslice.GetOutput())
-    return warpedImage
-    
-  def buildIdentity(self, image):
-    # Returns list of vtkImageData containing the identity transform (idx, idy, idz)
-    castf = vtk.vtkImageCast()
-    castf.SetOutputScalarTypeToDouble()
-    castf.SetInput(image)
-    castf.Update()
-    
-    size = image.GetDimensions()
-    origin = image.GetOrigin()
-    spacing = image.GetSpacing()
-    
-    print "Build id orig = " + str(origin) + " size = " + str(size) + " spacing = " + str(spacing)
-    
-    # NOTE: assume axial orientation
-    # TODO: reorient-flip input images when starting? How to overwrite input volume nodes?
-
-    idList = [None, None, None]
-    for dim in xrange(3):
-      copyImage = vtk.vtkImageData()
-      copyImage.DeepCopy(castf.GetOutput())
-      copyImage.GetPointData().GetScalars().FillComponent(0, 0.0)
-      idList[dim] = copyImage
-
-    # TODO: coordinate of MRML volume or vtkImageData?
-    # TODO: use IJK to RAS?
-
-    for i in xrange(size[0]):
-      x = i*spacing[0] + origin[0]
-      for j in xrange(size[1]):
-        y = j*spacing[1] + origin[1]
-        for k in xrange(size[2]):
-          z = k*spacing[2] + origin[2]
-          idList[0].SetScalarComponentFromDouble(i, j, k, 0, x)
-          idList[1].SetScalarComponentFromDouble(i, j, k, 0, y)
-          idList[2].SetScalarComponentFromDouble(i, j, k, 0, z)
-      
-    return idList
-    
-
-  def composeDeformations(self, F, G):
-    # Returns H = F \circ G
-    # F and G are lists of deformation maps (hx, hy, hz)
-    
-    fixedVolume = self.fixedSelector.currentNode()
-    fixedImage = fixedVolume.GetImageData()
-    
-    appendf = vtk.vtkImageAppendComponents()
-    appendf.SetInput(G[0])
-    appendf.AddInput(G[1])
-    appendf.AddInput(G[2])
-    appendf.Update()
-    
-    gridTrafo = vtk.vtkGridTransform()
-    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
-    gridTrafo.SetDisplacementScale(1.0)
-    gridTrafo.SetDisplacementShift(0.0)
-    gridTrafo.SetInterpolationModeToLinear()
-    gridTrafo.Update()
-    
-    H = [None, None, None]
-    
-    for dim in xrange(3):
-      # H[dim] = self.warpImage(F[dim], G)
-      reslice = vtk.vtkImageReslice()
-      reslice.SetInput(F[dim])
-      reslice.SetResliceTransform(gridTrafo)
-      reslice.SetInterpolationModeToLinear()
-      reslice.SetOutputDimensionality(3)
-      reslice.SetOutputOrigin(fixedImage.GetOrigin())
-      reslice.SetOutputSpacing(fixedImage.GetSpacing())
-      reslice.SetOutputExtent(fixedImage.GetWholeExtent())
-      reslice.SetNumberOfThreads(8)
-      reslice.Update()
-      
-      #H[dim] = reslice.GetOutput()
-      H[dim] = vtk.vtkImageData()
-      H[dim].DeepCopy(reslice.GetOutput())
-
-    return H
-
-  def composeDisplacements(self, F, G):
-    # Returns H = F \circ G
-    # F and G are lists of displacement maps [vx, vy, vz]
-    
-    fixedVolume = self.fixedSelector.currentNode()
-    fixedImage = fixedVolume.GetImageData()
-
-    mapF = [None, None, None]
-    for dim in xrange(3):
-      addf = vtk.vtkImageMathematics()
-      addf.SetOperationToAdd()
-      addf.SetInput1(F[dim])
-      addf.SetInput2(self.identityMap[dim])
-      addf.Update()
-
-      mapF[dim] = vtk.vtkImageData()
-      mapF[dim].DeepCopy( addf.GetOutput() )
-
-    appendf = vtk.vtkImageAppendComponents()
-    appendf.SetInput(G[0])
-    appendf.AddInput(G[1])
-    appendf.AddInput(G[2])
-    appendf.Update()
-    
-    gridTrafo = vtk.vtkGridTransform()
-    gridTrafo.SetDisplacementGrid(appendf.GetOutput())
-    gridTrafo.SetDisplacementScale(1.0)
-    gridTrafo.SetDisplacementShift(0.0)
-    gridTrafo.SetInterpolationModeToLinear()
-    gridTrafo.Update()
-    
-    H = [None, None, None]
-    
-    for dim in xrange(3):
-      # H[dim] = self.warpImage(F[dim], G)
-      reslice = vtk.vtkImageReslice()
-      reslice.SetInput(mapF[dim])
-      reslice.SetResliceTransform(gridTrafo)
-      reslice.SetInterpolationModeToLinear()
-      reslice.SetOutputDimensionality(3)
-      #reslice.SetOutputOrigin(fixedImage.GetOrigin())
-      #reslice.SetOutputSpacing(fixedImage.GetSpacing())
-      #reslice.SetOutputExtent(fixedImage.GetWholeExtent())
-      # TODO: SetBackgroundLevel(inf) then detect then replace with id
-      # TODO: for now just map it outside
-      reslice.SetBackgroundLevel(999999)
-      reslice.SetNumberOfThreads(8)
-      reslice.Update()
-      
-      #H[dim] = reslice.GetOutput()
-      H[dim] = vtk.vtkImageData()
-      H[dim].DeepCopy( reslice.GetOutput() )
-
-    # NOTE: VTK requires displacement field, need to subtract identity from H
-    for dim in xrange(3):
-      subf = vtk.vtkImageMathematics()
-      subf.SetOperationToSubtract()
-      subf.SetInput1(H[dim])
-      subf.SetInput2(self.identityMap[dim])
-      subf.Update()
-
-      #H[dim] = subf.GetOutput()
-      H[dim] = vtk.vtkImageData()
-      H[dim].DeepCopy(subf.GetOutput())
-
-    return H
-    
-  
-  #########################################################################
-  
-  def onReload(self,moduleName="SteeredFluidReg"):
-    """Generic reload method for any scripted module.
-    ModuleWizard will subsitute correct default moduleName.
-    """
-    import imp, sys, os, slicer
-
-    widgetName = moduleName + "Widget"
-
-    # reload the source code
-    # - set source file path
-    # - load the module to the global space
-    filePath = eval('slicer.modules.%s.path' % moduleName.lower())
-    p = os.path.dirname(filePath)
-    if not sys.path.__contains__(p):
-      sys.path.insert(0,p)
-    fp = open(filePath, "r")
-    globals()[moduleName] = imp.load_module(
-        moduleName, fp, filePath, ('.py', 'r', imp.PY_SOURCE))
-    fp.close()
-
-    # rebuild the widget
-    # - find and hide the existing widget
-    # - create a new widget in the existing parent
-    parent = slicer.util.findChildren(name='%s Reload' % moduleName)[0].parent()
-    for child in parent.children():
-      try:
-        child.hide()
-      except AttributeError:
-        pass
-    globals()[widgetName.lower()] = eval(
-        'globals()["%s"].%s(parent)' % (moduleName, widgetName))
-    globals()[widgetName.lower()].setup()
-
-
-
-#
-# SteeredFluidReg logic
-#
-
-class SteeredFluidRegLogic(object):
-#TODO
-  """ Implement a template matching optimizer that is
-  integrated with the slicer main loop.
-  """
-
-  def __init__(self,fixed=None,moving=None,transform=None):
-    self.interval = 1000
-    self.timer = None
-
-    # parameter defaults
-    self.regIteration = 10
-    self.viscosity = 50.0
-    self.opacity = 0.5
-
-    # slicer nodes set by the GUI
-    self.fixed = fixed
-    self.moving = moving
-    #self.transform = transform
-
-    # optimizer state variables
-    self.iteration = 0
-    self.interaction = False
-
-    self.position = []
-    self.paintCoordinates = []
-
-    self.lastEventPosition = [0.0, 0.0, 0.0]
-    self.startEventPosition = [0.0, 0.0, 0.0]
-    
-    # Queue containing info on arrow draw events, tuples of (Mtime, xy0, RAS0, xy1, RAS1, sliceWidget)
-    self.arrowQueue = Queue.Queue()
-
-    self.arrowStartXY = (0, 0, 0)
-    self.arrowEndXY = (0, 0, 0)
-    
-    self.arrowStartRAS = [0.0, 0.0, 0.0]
-    self.arrowEndRAS = [0.0, 0.0, 0.0]
-
-    print("Reload")
-
-    self.actionState = "idle"
-    self.interactorObserverTags = []
-    
-    self.styleObserverTags = []
-    self.sliceWidgetsPerStyle = {}
-
-    self.nodeIndexPerStyle = {}
-    self.sliceNodePerStyle = {}
-    
-    self.lastDrawMTime = 0
-    self.lastDrawSliceWidget = None
-    
-    self.arrowsActor = vtk.vtkActor()
-
-    self.movingArrowActor = vtk.vtkActor()
-    self.movingContourActor = vtk.vtkActor2D()
-    #self.movingContourActor = vtk.vtkImageActor()
-    
-    self.lastHoveredGradMag = 0
-
-    preferredDeviceType = "GPU"
-
-    # TODO create cl context and queue
-    self.clContext = None
-    for platform in cl.get_platforms():
-      for device in platform.get_devices():
-        if cl.device_type.to_string(device.type) == preferredDeviceType:
-          self.clContext = cl.Context([device])
-          print ("using: %s" % cl.device_type.to_string(device.type))
-          break;
-
-    if self.clContext is None:
-      self.clContext = cl.create_some_context()
-
-    self.clQueue = cl.CommandQueue(self.clContext)
-
-    
-  def __del__(self):
-  
-    # TODO
-    # Clean up, delete line in render window
-    layoutManager = slicer.app.layoutManager()
-    sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
-    for nodeIndex in xrange(sliceNodeCount):
-      # find the widget for each node in scene
-      sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
-      sliceWidget = layoutManager.sliceWidget(sliceNode.GetLayoutName())
-      
-      if sliceWidget:
-        renwin = sliceWidget.sliceView().renderWindow()
-        rencol = renwin.GetRenderers()
-        if rencol.GetNumberOfItems() == 2:
-          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
-
-  def start(self):
-
-    #print(self.identity)            
-    self.removeObservers()
-    # get new slice nodes
-    layoutManager = slicer.app.layoutManager()
-    sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
-    for nodeIndex in xrange(sliceNodeCount):
-      # find the widget for each node in scene
-      sliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, 'vtkMRMLSliceNode')
-      sliceWidget = layoutManager.sliceWidget(sliceNode.GetLayoutName())
-      
-      if sliceWidget:
-          
-        # add observers and keep track of tags
-        style = sliceWidget.sliceView().interactorStyle()
-        self.interactor = style.GetInteractor()
-        self.sliceWidgetsPerStyle[self.interactor] = sliceWidget
-        self.nodeIndexPerStyle[self.interactor] = nodeIndex
-        self.sliceNodePerStyle[self.interactor] = sliceNode
-        
-        events = ( "LeftButtonPressEvent","LeftButtonReleaseEvent","MouseMoveEvent", "KeyPressEvent","EnterEvent", "LeaveEvent" )
-        for event in events:
-          tag = self.interactor.AddObserver(event, self.processEvent, 1.0)
-          self.interactorObserverTags.append(tag)
-          
-
 
   def processEvent(self,observee,event=None):
   
@@ -1580,7 +1517,7 @@ class SteeredFluidRegLogic(object):
               ijk_p = movingRAStoIJK.MultiplyPoint(ras_p + (1,))
 
               #TODO verify coord is inside buffer
-              #g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
+              #g = self.outputGradientMag.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
               g = outputImage.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
               contourimg.SetScalarComponentFromDouble(xshift, yshift, 0, 0, g)
 
@@ -1662,8 +1599,9 @@ class SteeredFluidRegLogic(object):
      
           ijk = movingRAStoIJK.MultiplyPoint(ras + (1,))
           
-          g = w.outputGradientMag.GetScalarComponentAsDouble(round(ijk[0]), round(ijk[1]), round(ijk[2]), 0)
-          if nodeIndex > 2 and (g > 0.1*w.outputGradientMagMax):
+          g = self.outputGradientMag.GetScalarComponentAsDouble(round(ijk[0]), round(ijk[1]), round(ijk[2]), 0)
+          #if nodeIndex > 2 and (g > 0.1):
+          if nodeIndex > 2 and (g > 0.1*self.outputGradientMagMax):
             cursor = qt.QCursor(qt.Qt.OpenHandCursor)
             app.setOverrideCursor(cursor)
           else:
@@ -1737,11 +1675,6 @@ class SteeredFluidRegLogic(object):
         pass
 
     self.redrawSlices()
-
-  def stop(self):
-    self.actionState = "idle"
-    self.removeObservers()
-    
 
   def removeObservers(self):
     # remove observers and reset
