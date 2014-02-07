@@ -119,7 +119,7 @@ print("CL q+q")
 out2 = out2_array.get()
 print(out2)
 
-sigma = 3
+sigma = 0.5
 
 numSteps = 4
 
@@ -127,15 +127,16 @@ var = n.zeros((1,), dtype=n.float32)
 var[0] = sigma
 var_array = cla.to_device(queue, var)
 width = n.zeros((1,), dtype=n.int32)
-width[0] = 7
+width[0] = 3
 width_array = cla.to_device(queue, width)
 
 print("a")
-print(a_array)
+print(a)
 
 volumeCLProgram.gaussian_y(queue, shape, None, a_array.data, var_array.data, width_array.data, out1_array.data).wait()
 print("gaussian_x a")
-print(out1_array)
+out1 = out1_array.get()
+print(out1)
 
 print("inplace gaussian a")
 #volumeCLProgram.gaussian_x_step(queue, (shape[1], shape[2]), None, a_array.data, var_array.data)
@@ -145,6 +146,25 @@ volumeCLProgram.gaussian_y_step(queue, (shape[0], shape[2]), None, a_array.data,
 #_lambda = (sigma*sigma) / (2.0*numSteps)
 #nu = (1.0 + 2.0*_lambda - math.sqrt(1.0 + 4.0*_lambda)) / (2.0*_lambda);
 #a_array *= math.pow(nu / _lambda, 3*numSteps)
+print(a_array.get())
+
+
+volumeCLProgram.identity(queue, shape, None, out1_array.data, out2_array.data, out3_array.data).wait()
+
+print("Identity x")
+print(out1_array)
+print("Identity y")
+print(out2_array)
+print("Identity z")
+print(out3_array)
+
+aid_array = a_array.copy()
+
+#out3_array += 0.5
+
+volumeCLProgram.interpolate(queue, shape, None, a_array.data, out1_array.data, out2_array.data, out3_array.data, aid_array.data).wait()
+
+print("a")
 print(a_array)
-
-
+print("a(id)")
+print(aid_array)

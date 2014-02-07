@@ -300,6 +300,7 @@ __kernel void gaussian_z(
 // Gaussian filtering in x direction, in-place
 __kernel void recursive_gaussian_x(
   __global float* img,
+  __global uint* size,
   __global float* sigma)
 {
   size_t column = get_global_id(1);
@@ -529,14 +530,6 @@ __kernel void interpolate(
   float y = hy[offset] / spacing[1];
   float z = hz[offset] / spacing[2];
 
-/*
-  // Nearest neighbor
-  int x0 = convert_int(x+0.5);
-  int y0 = convert_int(y+0.5);
-  int z0 = convert_int(z+0.5);
-  dst[offset] = src[x0*ROWS*COLUMNS + y0*COLUMNS + z0];
-*/
-
   int x0 = convert_int(x);
   int y0 = convert_int(y);
   int z0 = convert_int(z);
@@ -575,6 +568,83 @@ __kernel void interpolate(
   float pix101 = src[x1*ROWS*COLUMNS + y0*COLUMNS + z1];
   float pix110 = src[x1*ROWS*COLUMNS + y1*COLUMNS + z0];
   float pix111 = src[x1*ROWS*COLUMNS + y1*COLUMNS + z1];
+
+  dst[offset] =
+    fx0*fy0*fz0*pix000
+    + fx0*fy0*fz1*pix001
+    + fx0*fy1*fz0*pix010
+    + fx0*fy1*fz1*pix011
+    + fx1*fy0*fz0*pix100
+    + fx1*fy0*fz1*pix101
+    + fx1*fy1*fz0*pix110
+    + fx1*fy1*fz1*pix111;
+}
+
+__kernel void interpolate_s(
+  __global float* src,
+  __global int* insize,
+  __global float* inspacing,
+  __global float* hx,
+  __global float* hy,
+  __global float* hz,
+  __global float* dst,
+  __global int* outsize)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= outsize[0] || row >= outsize[1] || column >= outsize[2])
+    return;
+
+  size_t offset = slice*outsize[1]*outsize[2] + row*outsize[2] + column;
+
+  // TODO Convert to voxel coordinate
+// TODO use origin and oriented spacing , from orientMat * spacing?
+// TODO make sure all inputs are converted to axial orient with non-neg spacings beforehand
+
+  float x = hx[offset] / inspacing[0];
+  float y = hy[offset] / inspacing[1];
+  float z = hz[offset] / inspacing[2];
+
+  int x0 = convert_int(x);
+  int y0 = convert_int(y);
+  int z0 = convert_int(z);
+
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (z0 < 0) z0 = 0;
+  if (x0 >= insize[0]) x0 = insize[0]-1;
+  if (y0 >= insize[0]) y0 = insize[1]-1;
+  if (z0 >= insize[0]) z0 = insize[2]-1;
+
+  int x1 = x0 + 1;
+  int y1 = y0 + 1;
+  int z1 = z0 + 1;
+
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (z1 < 0) z1 = 0;
+  if (x1 >= insize[0]) x1 = insize[0]-1;
+  if (y1 >= insize[0]) y1 = insize[1]-1;
+  if (z1 >= insize[0]) z1 = insize[2]-1;
+
+  float fx1 = x - floor(x);
+  float fy1 = y - floor(y);
+  float fz1 = z - floor(z);
+
+  float fx0 = 1.0 - fx1;
+  float fy0 = 1.0 - fy1;
+  float fz0 = 1.0 - fz1;
+
+  float pix000 = src[x0*insize[1]*insize[2] + y0*insize[2] + z0];
+  float pix001 = src[x0*insize[1]*insize[2] + y0*insize[2] + z1];
+  float pix010 = src[x0*insize[1]*insize[2] + y1*insize[2] + z0];
+  float pix011 = src[x0*insize[1]*insize[2] + y1*insize[2] + z1];
+  float pix100 = src[x1*insize[1]*insize[2] + y0*insize[2] + z0];
+  float pix101 = src[x1*insize[1]*insize[2] + y0*insize[2] + z1];
+  float pix110 = src[x1*insize[1]*insize[2] + y1*insize[2] + z0];
+  float pix111 = src[x1*insize[1]*insize[2] + y1*insize[2] + z1];
 
   dst[offset] =
     fx0*fy0*fz0*pix000
@@ -632,6 +702,8 @@ __kernel void identity_resampled(
   //if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
   if (slice >= outsize[0] || row >= outsize[1] || column >= outsize[2])
     return;
+
+  size_t offset = slice*outsize[1]*outsize[2] + row*outsize[2] + column;
 
   hx[offset] = slice * outspacing[0];
   hy[offset] = row * outspacing[1];
