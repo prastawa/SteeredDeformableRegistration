@@ -1,7 +1,6 @@
 
 import vtk, qt, ctk, slicer
 import math
-import threading
 import SimpleITK as sitk
 import sitkUtils
 import Queue
@@ -45,13 +44,14 @@ class ImageCL:
 
   def clone_empty(self):
     outimgcl = ImageCL(self.clqueue, self.clprogram)
-    outimgcl.origin = self.origin
-    outimgcl.shape = self.shape
-    outimgcl.spacing = self.spacing
+    outimgcl.origin = list(self.origin)
+    outimgcl.shape = list(self.shape)
+    outimgcl.spacing = list(self.spacing)
 
     outimgcl.clarray = None
     if self.clsize is not None:
       outimgcl.clsize = self.clsize.copy()
+    if self.clspacing is not None:
       outimgcl.clspacing = self.clspacing.copy()
 
     return outimgcl
@@ -218,42 +218,57 @@ class ImageCL:
 
     return mag
 
-  def gaussian(self, kernelwidth):
+  def discrete_gaussian(self, sigmax, sigmay, sigmaz):
     outimgcl = self.clone()
 
-
-    """ 
     var = n.zeros((1,), dtype=n.float32)
-    var[0] = kernelwidth * kernelwidth
     var_array = cla.to_device(self.clqueue, var)
     width = n.zeros((1,), dtype=n.int32)
-    width[0] = floor(kernelwidth * 3 + 1)
     width_array = cla.to_device(self.clqueue, width)
 
     tempclarray = outimgcl.clarray.copy()
 
-    self.clprogram.gaussian_x(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outimgcl.clarray.data).wait()
-    self.clprogram.gaussian_y(self.clqueue, self.shape, None, outimgcl.clarray.data, var_array.data,  width_array.data, tempclarray.data).wait()
-    self.clprogram.gaussian_z(self.clqueue, self.shape, None, tempclarray.data, var_array.data,  width_array.data, outimgcl.clarray.data).wait()
-    """ 
+    var_array[0] = (sigmax / self.spacing[0]) ** 2
+    width_array[0] = math.ceil(3*sigmax)
+    self.clprogram.gaussian_x(self.clqueue, self.shape, None,
+      tempclarray.data, self.clsize.data,
+      var_array.data, width_array.data, outimgcl.clarray.data).wait()
+
+    var_array[0] = (sigmay / self.spacing[1]) ** 2
+    width_array[0] = math.ceil(3*sigmay)
+    self.clprogram.gaussian_y(self.clqueue, self.shape, None,
+      outimgcl.clarray.data, self.clsize.data,
+      var_array.data, width_array.data,
+      tempclarray.data).wait()
+
+    var_array[0] = (sigmaz / self.spacing[2]) ** 2
+    width_array[0] = math.ceil(3*sigmaz)
+    self.clprogram.gaussian_z(self.clqueue, self.shape, None,
+      tempclarray.data, self.clsize.data,
+      var_array.data, width_array.data,
+      outimgcl.clarray.data).wait()
+
+    return outimgcl
+
+  def recursive_gaussian(self, sigmax, sigmay, sigmaz):
+    outimgcl = self.clone()
 
     sigma = n.zeros((1,), dtype=n.float32)
-    sigma[0] = kernelwidth
     sigma_array = cla.to_device(self.clqueue, sigma)
 
     sizeX = self.shape[0]
     sizeY = self.shape[1]
     sizeZ = self.shape[2]
 
-    sigma_array[0] = kernelwidth / self.spacing[2]
+    sigma_array[0] = sigmaz / self.spacing[2]
     outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
       (sizeX, sizeY), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
-    sigma_array[0] = kernelwidth / self.spacing[1]
+    sigma_array[0] = sigmay / self.spacing[1]
     outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
       (sizeX, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
-    sigma_array[0] = kernelwidth / self.spacing[0]
+    sigma_array[0] = sigmax / self.spacing[0]
     outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
       (sizeY, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
@@ -269,51 +284,43 @@ class ImageCL:
       if targetShape[dim] <= self.shape[dim] / 2:
         isDownsampling = True
         break
+    minspacing = min(self.spacing)
     if isDownsampling:
-      smoothimgcl = self.gaussian(1.0)
+      smoothimgcl = self.discrete_gaussian(minspacing)
     """
 
-    """
-    outimgcl = self.clone()
+    outimgcl = self.clone_empty()
 
     for dim in xrange(3):
-      outimgcl.clspacing[dim] = (self.clspacing[dim] * self.shape[dim]) / targetShape[dim]
+      outimgcl.shape[dim] = targetShape[dim]
+      outimgcl.spacing[dim] = \
+        (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
 
-    outimgcl.shape = targetShape
-    outimgcl.spacing = outspacing
+      outimgcl.clsize[dim] = targetShape[dim]
+      outimgcl.clspacing[dim] = outimgcl.spacing[dim]
 
-    # Resize cl array and vtk image
-    outimgcl.clarray = cl.array.zeros(self.queue, targetShape, n.float32)
-    outimgcl.image.SetExtent(
-      0, targetShape[2]-1, 0, targetShape[1]-1, 0, targetShape[0]-1)
 
-    nspacing = n.zeros((3,), dtype=n.float32)
-    for dim in xrange(3):
-      nspacing[dim] = outspacing[dim]
-    clspacing = cla.to_device(self.clqueue, nspacing)
-
-    nsize = n.zeros((3,), dtype=n.int32)
-    for dim in xrange(3):
-      nsize[dim] = targetShape[dim]
-    clsize = cla.to_device(self.clqueue, nsize)
+    # Resize cl array
+    outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, n.float32)
 
     hxclarray = cl.array.zeros_like(outimgcl.clarray)
     hyclarray = cl.array.zeros_like(outimgcl.clarray)
     hzclarray = cl.array.zeros_like(outimgcl.clarray)
 
-    self.clprogram.identity_resampled(self.clqueue, targetShape, None,
-      clspacing.data, clsize.data,
+    self.clprogram.identity(self.clqueue, targetShape, None,
+      outimgcl.clsize.data, outimgcl.clspacing.data,
       hxclarray.data,  hyclarray.data, hzclarray.data).wait()
     
-#TODO: different size arrays in interpolate
-# out size = h size, specified in args
-# kernel work size use out size
-# source always the orig size
-    #self.clprogram.interpolate(self.clqueue, targetShape, None,
-    #  self.clarray.data,
-    #  clspacing.data, clsize.data,
-    #  hxclarray.data, hyclarray.data, hzclarray.data,
-    #  outimgcl.clarray.data).wait()
+    self.clprogram.interpolate(self.clqueue, targetShape, None,
+      self.clarray.data,
+      self.clsize.data, self.clspacing.data,
+      hxclarray.data, hyclarray.data, hzclarray.data,
+      outimgcl.clarray.data,
+      outimgcl.clsize.data).wait()
+
+    hxclarray = None
+    hyclarray = None
+    hzclarray = None
 
     """
 
@@ -334,8 +341,7 @@ class ImageCL:
     resizef.SetOutputDimensions(targetShape[2], targetShape[1], targetShape[0])
     resizef.SetInput(vtkimage)
     resizef.Update()
-
-    # TODO update cl size, spacing, and resized data
+    """
 
     return outimgcl
 
@@ -405,11 +411,13 @@ class DeformationCL:
     return math.sqrt( magimg.max() )
 
   def resample(self, targetShape):
-    self.hx = self.hx.resample(targetShape)
-    self.hy = self.hx.resample(targetShape)
-    self.hz = self.hx.resample(targetShape)
+    hx_new = self.hx.resample(targetShape)
+    hy_new = self.hy.resample(targetShape)
+    hz_new = self.hz.resample(targetShape)
 
-    self.clgrid = self.hx
+    H_new = [hx_new, hy_new, hz_new]
+
+    return DeformationCL(hx_new, H_new)
 
   def applyTo(self, vol):
     # Output image is in the same grid as h
@@ -691,10 +699,21 @@ class SteeredFluidRegWidget:
     # Layout within the parameter collapsible button
     devFormLayout = qt.QFormLayout(devCollapsibleButton)
 
+    self.profilingButton = qt.QCheckBox("Code Profiling")
+    self.profilingButton.toolTip = "Obtain statistics of code execution."
+    self.profilingButton.name = "SteeredFluidReg Profiling"
+    self.profilingButton.connect('toggled(bool)', self.toggleProfiling)
+    devFormLayout.addWidget(self.profilingButton)
+
+    self.debugButton = qt.QCheckBox("Print debug Messages")
+    self.debugButton.toolTip = "Display extra messages in Python console."
+    self.debugButton.name = "SteeredFluidReg Debug"
+    self.debugButton.connect('toggled(bool)', self.updateLogicFromGUI)
+    devFormLayout.addWidget(self.debugButton)
+
     #
     # Execution triggers
     #
-
 
     # Start button
     self.regButton = qt.QPushButton("Start")
@@ -714,12 +733,19 @@ class SteeredFluidRegWidget:
     #if False:
       self.logic.testingData()
       self.fixedSelector.setCurrentNode(slicer.util.getNode('testbrain1'))
+      # Disable anyway, in case checkbox clicked during execution
       self.movingSelector.setCurrentNode(slicer.util.getNode('testbrain2'))
       # self.transformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
       # self.initialTransformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
 
 
-  def updateLogicFromGUI(self,args):
+  def toggleProfiling(self, checked):
+    if checked:
+      self.profiler.enable()
+    else:
+      self.profiler.disable()
+
+  def updateLogicFromGUI(self, args):
 
     # Handled by logic on start
     #self.logic.useFixedVolume(self.fixedSelector.currentNode())
@@ -736,21 +762,18 @@ class SteeredFluidRegWidget:
     self.logic.regIteration = self.regIterationSlider.value
     self.logic.viscosity = self.viscositySlider.value
     self.logic.opacity = self.opacitySlider.value
+
+    self.logic.debugMessages = self.debugButton.checked
+
+    # TODO: signal logic that objective function may have changed
+    # trigger appropriate behaviors (ex. delta adjust)
  
-          
   def onResetButtonToggled(self):
+    self.logic.actionState = "reset"
     #TODO
     #self.logic.reset()
-
-    self.logic.actionState = "reset"
-
-    # Set momentas to zero, copy moving to output
-    for dim in xrange(3):
-      self.displacement[dim].GetImageData().GetPointData().GetScalars().FillComponent(0, 0.0)
-    if outputVolume is not None:
-      outputVolume.GetImageData().GetPointData().SetScalars(movingVolume.GetImageData().GetPointData().GetScalars())
    
-  def onStart(self,checked):
+  def onStart(self, checked):
 
     if checked:
       self.regButton.text = "Stop"
@@ -811,8 +834,6 @@ class SteeredFluidRegWidget:
       self.logic.automaticRegistration = True
 
       print('Automatic registration = %d' %(self.logic.automaticRegistration))
-
-      self.profiler.enable()
       
       self.logic.startSteeredRegistration()
 
@@ -834,12 +855,12 @@ class SteeredFluidRegWidget:
       print('Automatic registration = %d' %(self.logic.automaticRegistration))
 
       self.profiler.disable()
-
-      s = StringIO.StringIO()
-      sortby = 'cumulative'
-      ps = pstats.Stats(self.profiler, stream=s).sort_stats(sortby)
-      ps.print_stats()
-      print s.getvalue()
+      if self.profilingButton.isChecked():
+        s = StringIO.StringIO()
+        sortby = 'cumulative'
+        ps = pstats.Stats(self.profiler, stream=s).sort_stats(sortby)
+        ps.print_stats()
+        print s.getvalue()
      
   def buildGrid(self, inputImage):
     castf = vtk.vtkImageCast()
@@ -1051,8 +1072,13 @@ class SteeredFluidRegLogic(object):
 
     fixedShape_down = list(self.fixedImageCL.shape)
     for dim in xrange(3):
+      #fixedShape_down[dim] = fixedShape_down[dim] / 2
       fixedShape_down[dim] = min(fixedShape_down[dim] / 2, 32)
-    #self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
+    self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
+
+    self.ratios_down = [1.0, 1.0, 1.0]
+    for dim in xrange(3):
+      self.ratios_down[dim] = self.fixedImageCL.spacing[dim] / self.fixedImageCL_down.spacing[dim]
 
   def useMovingVolume(self, volume):
 
@@ -1197,9 +1223,14 @@ class SteeredFluidRegLogic(object):
     applicationLogic = slicer.app.applicationLogic()
     applicationLogic.FitSliceToAll()
     
-    self.threadLock = threading.Lock()
+    self.outputImageCL_down = self.outputImageCL.resample(
+      self.fixedImageCL_down.shape)
 
-    self.deformationCL = DeformationCL(self.fixedImageCL)
+    self.identityCL_down = DeformationCL(self.fixedImageCL_down)
+    self.deformationCL_down = self.identityCL_down
+
+    self.identityCL = DeformationCL(self.fixedImageCL)
+    self.deformationCL = self.identityCL
     
     self.fluidDelta = 0.0
     
@@ -1215,9 +1246,6 @@ class SteeredFluidRegLogic(object):
 
   def updateStep(self):
   
-    #TODO can updates clash?
-    self.threadLock.acquire()
-    
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registering iteration %d' %(self.registrationIterationNumber))
     
@@ -1230,18 +1258,16 @@ class SteeredFluidRegLogic(object):
     if self.interaction:
       qt.QTimer.singleShot(self.interval, self.updateStep)
       
-    self.threadLock.release()
-
   def fluidUpdate(self):
     
     # Gradient descent: grad of output image * (fixed - output)
-    diffImageCL = self.fixedImageCL.subtract(self.outputImageCL)
+    diffImageCL_down = self.fixedImageCL_down.subtract(self.outputImageCL_down)
 
-    gradientsCL = self.outputImageCL.gradient()
+    gradientsCL_down = self.outputImageCL_down.gradient()
 
-    momentasCL = [None, None, None]
+    momentasCL_down = [None, None, None]
     for dim in xrange(3):
-      momentasCL[dim] = gradientsCL[dim].multiply(diffImageCL)
+      momentasCL_down[dim] = gradientsCL_down[dim].multiply(diffImageCL_down)
 
     isArrowUsed = False
     
@@ -1257,142 +1283,173 @@ class SteeredFluidRegLogic(object):
               
       # TODO use downsampled vol
       fixedVolume = widget.fixedSelector.currentNode()
+      movingVolume = widget.movingSelector.currentNode()
 
       imageSize = fixedVolume.GetImageData().GetDimensions()
 
-      shape = momentasCL[0].shape
+      shape = momentasCL_down[0].shape
+
+      origin = movingVolume.GetOrigin()
 
       isArrowUsed = True
-    
-      arrowTuple = self.arrowQueue.get()
-      
-      #print "arrowTuple = " + str(arrowTuple)
-      
-      Mtime = arrowTuple[0]
-      sliceWidget = arrowTuple[1]
-      startXY = arrowTuple[2]
-      endXY = arrowTuple[3]
-      startRAS = arrowTuple[4]
-      endRAS = arrowTuple[5]
 
-      #TODO add arrow display to proper widget/view (in ???)
-      
-      #startXYZ = sliceWidget.sliceView().convertDeviceToXYZ(startXY)
-      #startRAS = sliceWidget.sliceView().convertXYZToRAS(startXYZ)
-      
-      #endXYZ = sliceWidget.sliceView().convertDeviceToXYZ(endXY)
-      #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
+      # Only do 10 arrows per iteration, TODO: allow user adjustment
+      numArrowsToProcess = min(self.arrowQueue.qsize(), 10)
 
       # for mapping drawn force to image grid
-      # TODO use axial reoriented moving volume, skip using RAS matrix?
+      # TODO use reoriented volume with identity matrix?, skip using RAS matrix?
+      # issue with VTK negative coord in x,y ?
       movingRAStoIJK = vtk.vtkMatrix4x4()
-      widget.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
-  
-      startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
-      endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
-                
-      forceVector = [0, 0, 0]
-      forceCenter = [0, 0, 0]
-      forceMag = 0
+      movingVolume.GetRASToIJKMatrix(movingRAStoIJK)
+    
+      for count in xrange(numArrowsToProcess):
+        arrowTuple = self.arrowQueue.get()
       
-      for dim in xrange(3):
-        forceCenter[dim] = int( round(startIJK[dim]) )
-        # TODO automatically determine magnitude from the gradient update (balanced?)
-        # TODO need orientation adjustment when using RAS
-        #forceVector[dim] = (endRAS[dim] - startRAS[dim])
-        # TODO need inversion for IJK ?
-        #forceVector[dim] = (endIJK[dim] - startIJK[dim])
-        forceVector[dim] = (startIJK[dim] - endIJK[dim])
-        forceMag += forceVector[dim] ** 2
+        #print "arrowTuple = " + str(arrowTuple)
+      
+        Mtime = arrowTuple[0]
+        sliceWidget = arrowTuple[1]
+        startXY = arrowTuple[2]
+        endXY = arrowTuple[3]
+        startRAS = arrowTuple[4]
+        endRAS = arrowTuple[5]
+
+        #TODO add arrow display to proper widget/view (in ???)
+      
+        #startXYZ = sliceWidget.sliceView().convertDeviceToXYZ(startXY)
+        #startRAS = sliceWidget.sliceView().convertXYZToRAS(startXYZ)
+      
+        #endXYZ = sliceWidget.sliceView().convertDeviceToXYZ(endXY)
+        #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
+  
+        startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
+        endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
+        #startIJK = startRAS
+        #endIJK = endRAS
+
+        # Scale according to downsampling ratio
+        startIJK = list(startIJK)
+        endIJK = list(endIJK)
+        for dim in xrange(3):
+          startIJK[dim] *= self.ratios_down[dim]
+          endIJK[dim] *= self.ratios_down[dim]
+          #startIJK[dim] -= origin[dim]
+          #endIJK[dim] -= origin[dim]
+          #startIJK[dim] /= self.fixedImageCL_down.spacing[dim]
+          #endIJK[dim] /= self.fixedImageCL_down.spacing[dim]
+                
+        forceVector = [0, 0, 0]
+        forceMag = 0
+
+        pos = [0, 0, 0]
+      
+        for dim in xrange(3):
+          # TODO automatically determine magnitude from the gradient update (balanced?)
+          # TODO need orientation adjustment when using RAS
+          #forceVector[dim] = (endRAS[dim] - startRAS[dim])
+          # TODO need inversion for IJK ?
+          #forceVector[dim] = (endIJK[dim] - startIJK[dim])
+          forceVector[dim] = (startIJK[dim] - endIJK[dim]) * 10.0
+          forceMag += forceVector[dim] ** 2
+
+          pos[dim] = int( round(startIJK[dim]) )
         
-      forceMag = math.sqrt(forceMag)
+        forceMag = math.sqrt(forceMag)
 
-               
-      # TODO: real splatting? need an area of effect instead of point impulse
-      pos = [0, 0, 0]
-      for ti in xrange(-1,2):
-        pos[0] = forceCenter[0] + ti
-        if pos[0] < 0 or pos[0] >= imageSize[0]:
+        # CL array index is reverse of VTK image index
+        pos.reverse()
+
+        for dim in xrange(3):
+          if pos[dim] < 0:
+            pos[dim] = 0
+          if pos[dim] >= shape[dim]:
+            pos[dim] = shape[dim]-1
+
+        print "pos = " + str(pos)
+        print "forceVector = " + str(forceVector)
+
+        # TODO: do CL array access and updates in groups? more efficient? create index matrix and then do subset ops?
+            
+        """
+        # Find vector along grad that projects to the force vector described on the plane
+        gvec = [0.0, 0.0, 0.0]
+
+        gmag = 0.0
+        for dim in xrange(3):
+          grad_array = gradientsCL_down[dim].clarray
+          g = grad_array[ pos[0], pos[1], pos[2] ]
+          gvec[dim] = g.get()[()] # Convert to scalar
+          gmag += gvec[dim] ** 2
+        gmag = math.sqrt(gmag)
+        if gmag == 0.0:
           continue
-        for tj in xrange(-1,2):
-          pos[1] = forceCenter[1] + tj
-          if pos[1] < 0 or pos[1] >= imageSize[1]:
-            continue
-          for tk in xrange(-1,2):
-            pos[2] = forceCenter[2] + tk
-            if pos[2] < 0 or pos[2] >= imageSize[2]:
-              continue
             
-            # Find vector along grad that projects to the force vector described on the plane
-            gvec = [0.0, 0.0, 0.0]
+        gdotf = 0
+        for dim in xrange(3):
+          gvec[dim] = gvec[dim] / gmag
+          gdotf += gvec[dim] * forceVector[dim]
+        if gdotf == 0.0:
+          continue
+        """
 
-            # TODO: do array access and updates all at once? more efficient? create index matrix and then do subset ops?
+        for dim in xrange(3):
+          mom_array = momentasCL_down[dim].clarray
+          mom_array[ pos[0], pos[1], pos[2] ] += \
+            forceVector[dim]
+          #  gvec[dim] * forceMag**2.0 / gdotf
 
-            gmag = 0.0
-            for dim in xrange(3):
-              # CL array index is opposite of VTK image index
-              grad_array = gradientsCL[dim].clarray
-              g = grad_array[ pos[2], pos[1], pos[0] ]
-              gvec[dim] = g.get()[()] # Convert to scalar
-              gmag += gvec[dim] ** 2
-            gmag = math.sqrt(gmag)
-            if gmag == 0.0:
-              continue
-            
-            gdotf = 0
-            for dim in xrange(3):
-              gvec[dim] = gvec[dim] / gmag
-              gdotf += gvec[dim] * forceVector[dim]
-            if gdotf == 0.0:
-              continue
-            
-            for dim in xrange(3):
-              # CL array index is opposite of VTK image index
-              mom_array = momentasCL[dim].clarray
-              mom_array[ pos[2], pos[1], pos[0] ] += \
-                gvec[dim] * forceMag**2.0 / gdotf
-              # forceVector[dim]
-
-    velocitiesCL = [None, None, None]
+    velocitiesCL_down = [None, None, None]
     for dim in xrange(3):
-      largeV = momentasCL[dim].gaussian(15.0)
+      largeV = momentasCL_down[dim].recursive_gaussian(15.0, 15.0, 15.0)
       largeV.scale(self.viscosity)
 
-      smallV = momentasCL[dim].gaussian(5.0)
+      smallV = momentasCL_down[dim].recursive_gaussian(5.0, 5.0, 5.0)
 
-      velocitiesCL[dim] = smallV
-      velocitiesCL[dim].add_inplace(largeV)
+      velocitiesCL_down[dim] = smallV
+      velocitiesCL_down[dim].add_inplace(largeV)
       
     # Compute max velocity
-    velocMagCL = velocitiesCL[0].multiply(velocitiesCL[0])
+    velocMagCL = velocitiesCL_down[0].multiply(velocitiesCL_down[0])
     for dim in xrange(1,3):
-      velocMagCL.add_inplace( velocitiesCL[dim].multiply(velocitiesCL[dim]) )
+      velocMagCL.add_inplace(
+        velocitiesCL_down[dim].multiply(velocitiesCL_down[dim]) )
       
     maxVeloc = velocMagCL.max()
-    #print "maxVeloc = %f" % maxVeloc
+
+    if self.debugMessages:
+      print "maxVeloc = %f" % maxVeloc
     
     if maxVeloc <= 0.0:
       return
       
     maxVeloc = math.sqrt(maxVeloc)
 
-    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 1.0:
-      self.fluidDelta = 1.0 / maxVeloc
+    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
+      self.fluidDelta = 2.0 / maxVeloc
 
     for dim in xrange(3):
-      velocitiesCL[dim].scale(self.fluidDelta)
+      velocitiesCL_down[dim].scale(self.fluidDelta)
 
     # Reset delta for next iteration if we used an impulse
     # TODO: control
     if isArrowUsed:
       self.fluidDelta = 0.0
 
-    smallDeformationCL = DeformationCL(self.fixedImageCL)
-    smallDeformationCL.add_velocity(velocitiesCL)
+    smallDeformationCL_down = self.identityCL_down.clone()
+    smallDeformationCL_down.add_velocity(velocitiesCL_down)
 
-    self.deformationCL = self.deformationCL.compose(smallDeformationCL)
+    self.deformationCL_down = self.deformationCL_down.compose(
+      smallDeformationCL_down)
+    self.deformationCL = self.deformationCL_down.compose(self.identityCL)
+    #self.deformationCL = self.deformationCL_down.resample(
+    #  self.fixedImageCL.shape)
 
     self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
+    self.outputImageCL_down = self.identityCL_down.applyTo(
+      self.outputImageCL)
+    #self.outputImageCL_down = self.deformationCL_down.applyTo(
+    #  self.movingImageCL)
+
     self.updateOutputVolume(self.outputImageCL)
 
   def processEvent(self,observee,event=None):
@@ -1691,7 +1748,6 @@ class SteeredFluidRegLogic(object):
 
       winsize = renwin.GetSize()
       winsize = (float(winsize[0]), float(winsize[1]))
-      print "Window size = " + str(winsize)
 
       ren = renwin.GetRenderers().GetFirstRenderer()
 
@@ -1719,9 +1775,9 @@ class SteeredFluidRegLogic(object):
         coord.SetValue(endXY[0], endXY[1], 0.0)
         worldEndXY = coord.GetComputedWorldValue(ren)
 
-        # DEBUG
-        print "startXY = " + str(startXY)
-        print "worldStartXY = " + str(worldStartXY)
+        if self.debugMessages:
+          print "startXY = " + str(startXY)
+          print "worldStartXY = " + str(worldStartXY)
         
         vectors.SetTuple3(i, (worldEndXY[0] - worldStartXY[0]), (worldEndXY[1] - worldStartXY[1]), 0.0)
       

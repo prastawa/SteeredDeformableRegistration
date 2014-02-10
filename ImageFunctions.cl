@@ -199,14 +199,12 @@ __kernel void recursive_gaussian_x(
   }
 
   // NOTE: do this outside to get full 3D parallelization
-  // Ignore for now since scaling is not important
-/*
+  // Ignore since scaling is not important?
   for (size_t slice = 0; slice < size[0]; slice++)
   {
     size_t pos = slice*size[1]*size[2] + sliceStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
-*/
 }
 
 // Gaussian filtering in y direction, in-place
@@ -254,13 +252,11 @@ __kernel void recursive_gaussian_y(
   }
 
   // NOTE: do this outside to get full 3D parallelization
-/*
   for (size_t row = 0; row < size[1]; row++)
   {
     size_t pos = row*size[2] + rowStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
-*/
 }
 
 // Gaussian filtering in z direction, in-place
@@ -305,13 +301,11 @@ __kernel void recursive_gaussian_z(
   }
 
   // NOTE: do this outside to get full 3D parallelization
-/*
   for (size_t column = 0; column < size[2]; column++)
   {
     size_t pos = column + columnStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
-*/
 }
 
 //
