@@ -650,7 +650,17 @@ class SteeredFluidRegWidget:
     # Layout within the parameter collapsible button
     optFormLayout = qt.QFormLayout(optCollapsibleButton)
 
+    spinBoxLayout = qt.QGridLayout()
+    self.gridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
+    for dim in xrange(3):
+      self.gridSpinBoxes[dim].setValue(64)
+      spinBoxLayout.addWidget(self.gridSpinBoxes[dim], 0, dim)
+
+    optFormLayout.addRow("Deformation grid: ", spinBoxLayout)
+    # TODO: regridding callback in logic
+
     # Floating image opacity
+    # TODO: move to interaction
     self.opacitySlider = ctk.ctkSliderWidget()
     self.opacitySlider.decimals = 2
     self.opacitySlider.singleStep = 0.05
@@ -664,7 +674,7 @@ class SteeredFluidRegWidget:
     self.regIterationSlider.decimals = 2
     self.regIterationSlider.singleStep = 10
     self.regIterationSlider.minimum = 10
-    self.regIterationSlider.maximum = 10000
+    self.regIterationSlider.maximum = 1000
     self.regIterationSlider.toolTip = "Number of iterations"
     optFormLayout.addRow("Iterations:", self.regIterationSlider)
 
@@ -1066,6 +1076,8 @@ class SteeredFluidRegLogic(object):
     axialVolume = self.reorientVolumeToAxial(volume)
     self.axialFixedVolume = axialVolume
 
+    widget = slicer.modules.SteeredFluidRegWidget
+
     self.fixedImageCL = ImageCL(self.clqueue, self.clprogram)
     self.fixedImageCL.fromVolume(axialVolume)
     self.fixedImageCL.normalize()
@@ -1073,12 +1085,16 @@ class SteeredFluidRegLogic(object):
     fixedShape_down = list(self.fixedImageCL.shape)
     for dim in xrange(3):
       #fixedShape_down[dim] = fixedShape_down[dim] / 2
-      fixedShape_down[dim] = min(fixedShape_down[dim] / 2, 32)
+      fixedShape_down[dim] = \
+        min(fixedShape_down[dim], widget.gridSpinBoxes[dim].value)
     self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
 
     self.ratios_down = [1.0, 1.0, 1.0]
     for dim in xrange(3):
       self.ratios_down[dim] = self.fixedImageCL.spacing[dim] / self.fixedImageCL_down.spacing[dim]
+
+    if self.debugMessages:
+      print "Using deformation grid " + str(fixedShape_down)
 
   def useMovingVolume(self, volume):
 
@@ -1365,12 +1381,12 @@ class SteeredFluidRegLogic(object):
           if pos[dim] >= shape[dim]:
             pos[dim] = shape[dim]-1
 
-        print "pos = " + str(pos)
-        print "forceVector = " + str(forceVector)
+        if self.debugMessages:
+          print "pos = " + str(pos)
+          print "forceVector = " + str(forceVector)
 
         # TODO: do CL array access and updates in groups? more efficient? create index matrix and then do subset ops?
             
-        """
         # Find vector along grad that projects to the force vector described on the plane
         gvec = [0.0, 0.0, 0.0]
 
@@ -1390,13 +1406,12 @@ class SteeredFluidRegLogic(object):
           gdotf += gvec[dim] * forceVector[dim]
         if gdotf == 0.0:
           continue
-        """
 
         for dim in xrange(3):
           mom_array = momentasCL_down[dim].clarray
           mom_array[ pos[0], pos[1], pos[2] ] += \
-            forceVector[dim]
-          #  gvec[dim] * forceMag**2.0 / gdotf
+            gvec[dim] * forceMag**2.0 / gdotf
+          #  forceVector[dim]
 
     velocitiesCL_down = [None, None, None]
     for dim in xrange(3):
@@ -1560,7 +1575,8 @@ class SteeredFluidRegLogic(object):
           #self.movingContourActor.SetOpacity(0.5)
           #self.movingContourActor.GetProperty().SetOpacity(0.5)
 
-          print "Init contour pos = " + str(self.movingContourActor.GetPosition())
+          if self.debugMessages:
+            print "Init contour pos = " + str(self.movingContourActor.GetPosition())
 
           # Add image to slice view in row above
           otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
