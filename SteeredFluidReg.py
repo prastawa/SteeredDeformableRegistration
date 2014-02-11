@@ -1,9 +1,10 @@
 
 import vtk, qt, ctk, slicer
 import math
-import SimpleITK as sitk
-import sitkUtils
+#import SimpleITK as sitk
+#import sitkUtils
 import Queue
+import time
 
 import cProfile, pstats, StringIO
 
@@ -218,7 +219,7 @@ class ImageCL:
 
     return mag
 
-  def discrete_gaussian(self, sigmax, sigmay, sigmaz):
+  def discrete_gaussian(self, sigma):
     outimgcl = self.clone()
 
     var = n.zeros((1,), dtype=n.float32)
@@ -228,21 +229,21 @@ class ImageCL:
 
     tempclarray = outimgcl.clarray.copy()
 
-    var_array[0] = (sigmax / self.spacing[0]) ** 2
-    width_array[0] = math.ceil(3*sigmax)
+    var_array[0] = (sigma / self.spacing[0]) ** 2
+    width_array[0] = math.ceil(3*sigma)
     self.clprogram.gaussian_x(self.clqueue, self.shape, None,
       tempclarray.data, self.clsize.data,
       var_array.data, width_array.data, outimgcl.clarray.data).wait()
 
-    var_array[0] = (sigmay / self.spacing[1]) ** 2
-    width_array[0] = math.ceil(3*sigmay)
+    var_array[0] = (sigma / self.spacing[1]) ** 2
+    width_array[0] = math.ceil(3*sigma)
     self.clprogram.gaussian_y(self.clqueue, self.shape, None,
       outimgcl.clarray.data, self.clsize.data,
       var_array.data, width_array.data,
       tempclarray.data).wait()
 
-    var_array[0] = (sigmaz / self.spacing[2]) ** 2
-    width_array[0] = math.ceil(3*sigmaz)
+    var_array[0] = (sigma / self.spacing[2]) ** 2
+    width_array[0] = math.ceil(3*sigma)
     self.clprogram.gaussian_z(self.clqueue, self.shape, None,
       tempclarray.data, self.clsize.data,
       var_array.data, width_array.data,
@@ -250,25 +251,24 @@ class ImageCL:
 
     return outimgcl
 
-  def recursive_gaussian(self, sigmax, sigmay, sigmaz):
+  def recursive_gaussian(self, sigma):
     outimgcl = self.clone()
 
-    sigma = n.zeros((1,), dtype=n.float32)
-    sigma_array = cla.to_device(self.clqueue, sigma)
+    sigma_array = cl.array.zeros(self.clqueue, (1,), n.float32)
 
     sizeX = self.shape[0]
     sizeY = self.shape[1]
     sizeZ = self.shape[2]
 
-    sigma_array[0] = sigmaz / self.spacing[2]
+    sigma_array[0] = sigma / self.spacing[2]
     outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
       (sizeX, sizeY), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
-    sigma_array[0] = sigmay / self.spacing[1]
+    sigma_array[0] = sigma / self.spacing[1]
     outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
       (sizeX, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
-    sigma_array[0] = sigmax / self.spacing[0]
+    sigma_array[0] = sigma / self.spacing[0]
     outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
       (sizeY, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
@@ -440,6 +440,12 @@ class DeformationCL:
     H_new = [hx_new, hy_new, hz_new]
 
     return DeformationCL(otherdef.clgrid, H_new)
+
+  def splat_force(self, forces):
+    # TODO: CL kernel that splats forces fx,fy,fz to hx,hy,hz
+    # splat(fx, fy, fz, fPositions, numF, hx, hy, hz, hsize, hspacing)
+    # at each pos, check proximity to forces then add weighted values
+    pass
 
 # TODO add support for downsampling and upsampling
 # first in ImageCL then here as well
@@ -640,15 +646,60 @@ class SteeredFluidRegWidget:
 
     # TODO: pull, expand, shrink checkbuttons -- default is pull
 
-    #
-    # Registration options collapsible button
-    #
-    optCollapsibleButton = ctk.ctkCollapsibleButton()
-    optCollapsibleButton.text = "Registration Parameters"
-    self.layout.addWidget(optCollapsibleButton)
+    uiOptCollapsibleButton = ctk.ctkCollapsibleButton()
+    uiOptCollapsibleButton.text = "Steering UI Parameters"
+    self.layout.addWidget(uiOptCollapsibleButton)
 
     # Layout within the parameter collapsible button
-    optFormLayout = qt.QFormLayout(optCollapsibleButton)
+    uiOptFormLayout = qt.QFormLayout(uiOptCollapsibleButton)
+
+    # Interaction mode
+    steerModeLayout = qt.QGridLayout()
+    self.pullModeRadio = qt.QRadioButton("Pull")
+    self.expandModeRadio = qt.QRadioButton("Expand")
+    self.shrinkModeRadio = qt.QRadioButton("Shrink")
+    steerModeLayout.addWidget(self.pullModeRadio, 0, 0)
+    steerModeLayout.addWidget(self.expandModeRadio, 0, 1)
+    steerModeLayout.addWidget(self.shrinkModeRadio, 0, 2)
+
+    steerModeRadios = (self.pullModeRadio, self.expandModeRadio, self.shrinkModeRadio)
+    for r in steerModeRadios:
+      r.connect('clicked(bool)', self.updateLogicFromGUI)
+
+    self.pullModeRadio.checked = True
+
+    uiOptFormLayout.addRow("Steering Mode: ", steerModeLayout)
+
+    # Floating image opacity
+    self.opacitySlider = ctk.ctkSliderWidget()
+    self.opacitySlider.decimals = 2
+    self.opacitySlider.singleStep = 0.05
+    self.opacitySlider.minimum = 0.0
+    self.opacitySlider.maximum = 1.0
+    self.opacitySlider.toolTip = "Transparency of floating moving image"
+    uiOptFormLayout.addRow("Floating Image Opacity:", self.opacitySlider)
+
+    # Draw iterations
+    self.drawIterationSlider = ctk.ctkSliderWidget()
+    self.drawIterationSlider.decimals = 0
+    self.drawIterationSlider.singleStep = 1
+    self.drawIterationSlider.minimum = 1
+    self.drawIterationSlider.maximum = 100
+    self.drawIterationSlider.toolTip = "Update and draw every N iterations"
+    uiOptFormLayout.addRow("Redraw Iterations:", self.drawIterationSlider)
+
+    self.drawIterationSlider.value = self.logic.drawIterations
+    self.opacitySlider.value = self.logic.opacity
+
+    #
+    # Registration regOptions collapsible button
+    #
+    regOptCollapsibleButton = ctk.ctkCollapsibleButton()
+    regOptCollapsibleButton.text = "Registration Parameters"
+    self.layout.addWidget(regOptCollapsibleButton)
+
+    # Layout within the parameter collapsible button
+    regOptFormLayout = qt.QFormLayout(regOptCollapsibleButton)
 
     spinBoxLayout = qt.QGridLayout()
     self.gridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
@@ -656,45 +707,21 @@ class SteeredFluidRegWidget:
       self.gridSpinBoxes[dim].setValue(64)
       spinBoxLayout.addWidget(self.gridSpinBoxes[dim], 0, dim)
 
-    optFormLayout.addRow("Deformation grid: ", spinBoxLayout)
+    regOptFormLayout.addRow("Deformation Grid: ", spinBoxLayout)
     # TODO: regridding callback in logic
 
-    # Floating image opacity
-    # TODO: move to interaction
-    self.opacitySlider = ctk.ctkSliderWidget()
-    self.opacitySlider.decimals = 2
-    self.opacitySlider.singleStep = 0.05
-    self.opacitySlider.minimum = 0.0
-    self.opacitySlider.maximum = 1.0
-    self.opacitySlider.toolTip = "Transparency of floating moving image ."
-    optFormLayout.addRow("Floating image opacity:", self.opacitySlider)
+    # Fluid kernel width
+    self.fluidKernelWidth = ctk.ctkSliderWidget()
+    self.fluidKernelWidth.decimals = 1
+    self.fluidKernelWidth.singleStep = 0.5
+    self.fluidKernelWidth.minimum = 0.5
+    self.fluidKernelWidth.maximum = 50.0
+    self.fluidKernelWidth.toolTip = "Area of effect for deformation forces."
+    regOptFormLayout.addRow("Deformation Stiffness:", self.fluidKernelWidth)
 
-    # iteration slider
-    self.regIterationSlider = ctk.ctkSliderWidget()
-    self.regIterationSlider.decimals = 2
-    self.regIterationSlider.singleStep = 10
-    self.regIterationSlider.minimum = 10
-    self.regIterationSlider.maximum = 1000
-    self.regIterationSlider.toolTip = "Number of iterations"
-    optFormLayout.addRow("Iterations:", self.regIterationSlider)
+    self.fluidKernelWidth.value = self.logic.fluidKernelWidth
 
-    # Fluid viscosity
-    self.viscositySlider = ctk.ctkSliderWidget()
-    self.viscositySlider.decimals = 2
-    self.viscositySlider.singleStep = 1.0
-    self.viscositySlider.minimum = 0.0
-    self.viscositySlider.maximum = 100.0
-    self.viscositySlider.toolTip = "Area of effect for deformation forces."
-    optFormLayout.addRow("Deformation stiffness:", self.viscositySlider)
-
-    # get default values from logic
-    self.regIterationSlider.value = self.logic.regIteration
-    self.viscositySlider.value = self.logic.viscosity
-    self.opacitySlider.value = self.logic.opacity
-
-    #print(self.logic.regIteration)
-
-    sliders = (self.regIterationSlider, self.viscositySlider, self.opacitySlider)
+    sliders = (self.drawIterationSlider, self.fluidKernelWidth, self.opacitySlider)
     for slider in sliders:
       slider.connect('valueChanged(double)', self.updateLogicFromGUI)
 
@@ -715,7 +742,7 @@ class SteeredFluidRegWidget:
     self.profilingButton.connect('toggled(bool)', self.toggleProfiling)
     devFormLayout.addWidget(self.profilingButton)
 
-    self.debugButton = qt.QCheckBox("Print debug Messages")
+    self.debugButton = qt.QCheckBox("Print Debug Messages")
     self.debugButton.toolTip = "Display extra messages in Python console."
     self.debugButton.name = "SteeredFluidReg Debug"
     self.debugButton.connect('toggled(bool)', self.updateLogicFromGUI)
@@ -727,7 +754,7 @@ class SteeredFluidRegWidget:
 
     # Start button
     self.regButton = qt.QPushButton("Start")
-    self.regButton.toolTip = "Run registration."
+    self.regButton.toolTip = "Run steered registration"
     self.regButton.checkable = True
     self.layout.addWidget(self.regButton)
     self.regButton.connect('toggled(bool)', self.onStart)
@@ -769,11 +796,18 @@ class SteeredFluidRegWidget:
     # if(self.logic.transform is not None):
     #   self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
     
-    self.logic.regIteration = self.regIterationSlider.value
-    self.logic.viscosity = self.viscositySlider.value
+    self.logic.drawIterations = self.drawIterationSlider.value
+    self.logic.fluidKernelWidth = self.fluidKernelWidth.value
     self.logic.opacity = self.opacitySlider.value
 
     self.logic.debugMessages = self.debugButton.checked
+
+    if self.pullModeRadio.checked:
+      self.logic.steerMode = "pull"
+    if self.expandModeRadio.checked:
+      self.logic.steerMode = "expand"
+    if self.shrinkModeRadio.checked:
+      self.logic.steerMode = "shrink"
 
     # TODO: signal logic that objective function may have changed
     # trigger appropriate behaviors (ex. delta adjust)
@@ -959,8 +993,8 @@ class SteeredFluidRegLogic(object):
     self.timer = None
 
     # parameter defaults
-    self.regIteration = 10
-    self.viscosity = 50.0
+    self.drawIterations = 5
+    self.fluidKernelWidth = 15.0
     self.opacity = 0.5
 
     # TODO
@@ -969,6 +1003,8 @@ class SteeredFluidRegLogic(object):
     # optimizer state variables
     self.iteration = 0
     self.interaction = False
+
+    self.steerMode = "pull"
 
     self.position = []
     self.paintCoordinates = []
@@ -998,10 +1034,13 @@ class SteeredFluidRegLogic(object):
     
     self.lastDrawMTime = 0
     self.lastDrawSliceWidget = None
+
+    self.expandShrinkVectors = []
     
     self.arrowsActor = vtk.vtkActor()
 
     self.movingArrowActor = vtk.vtkActor()
+
     self.movingContourActor = vtk.vtkActor2D()
     #self.movingContourActor = vtk.vtkImageActor()
     
@@ -1263,12 +1302,22 @@ class SteeredFluidRegLogic(object):
   def updateStep(self):
   
     self.registrationIterationNumber = self.registrationIterationNumber + 1
-    #print('Registering iteration %d' %(self.registrationIterationNumber))
+    #print('Registration iteration %d' %(self.registrationIterationNumber))
     
     # TODO: break down into computeImageMomenta, addUserControl, deformImages?
     self.fluidUpdate()
    
-    self.redrawSlices()
+    # Only upsample and redraw updated image every N iterations
+    if self.registrationIterationNumber % self.drawIterations == 0:
+      self.deformationCL = self.deformationCL_down.compose(self.identityCL)
+      #self.deformationCL = self.deformationCL_down.resample(
+      #  self.fixedImageCL.shape)
+      self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
+
+      #TODO: display downsampled output image instead?
+
+      self.updateOutputVolume(self.outputImageCL)
+      self.redrawSlices()
 
     # Initiate another iteration of the registration algorithm.
     if self.interaction:
@@ -1297,9 +1346,10 @@ class SteeredFluidRegLogic(object):
       # TODO use axial reoriented fixed volume, skip using RAS matrix?
       widget= slicer.modules.SteeredFluidRegWidget
               
-      # TODO use downsampled vol
-      fixedVolume = widget.fixedSelector.currentNode()
-      movingVolume = widget.movingSelector.currentNode()
+      #fixedVolume = widget.fixedSelector.currentNode()
+      #movingVolume = widget.movingSelector.currentNode()
+      fixedVolume = self.axialFixedVolume
+      movingVolume = self.axialMovingVolume
 
       imageSize = fixedVolume.GetImageData().GetDimensions()
 
@@ -1311,6 +1361,9 @@ class SteeredFluidRegLogic(object):
 
       # Only do 10 arrows per iteration, TODO: allow user adjustment
       numArrowsToProcess = min(self.arrowQueue.qsize(), 10)
+
+      if self.debugMessages:
+        print "Folding in %d arrows" % numArrowsToProcess
 
       # for mapping drawn force to image grid
       # TODO use reoriented volume with identity matrix?, skip using RAS matrix?
@@ -1355,7 +1408,7 @@ class SteeredFluidRegLogic(object):
           #endIJK[dim] /= self.fixedImageCL_down.spacing[dim]
                 
         forceVector = [0, 0, 0]
-        forceMag = 0
+        forceMag = 0.0
 
         pos = [0, 0, 0]
       
@@ -1363,16 +1416,23 @@ class SteeredFluidRegLogic(object):
           # TODO automatically determine magnitude from the gradient update (balanced?)
           # TODO need orientation adjustment when using RAS
           #forceVector[dim] = (endRAS[dim] - startRAS[dim])
-          # TODO need inversion for IJK ?
-          #forceVector[dim] = (endIJK[dim] - startIJK[dim])
-          forceVector[dim] = (startIJK[dim] - endIJK[dim]) * 10.0
-          forceMag += forceVector[dim] ** 2
 
-          pos[dim] = int( round(startIJK[dim]) )
+          if self.steerMode == "pull":
+            forceVector[dim] = (startIJK[dim] - endIJK[dim])
+            pos[dim] = int( round(startIJK[dim]) )
+          elif self.steerMode == "expand":
+            forceVector[dim] = (startIJK[dim] - endIJK[dim])
+            pos[dim] = int( round(endIJK[dim]) )
+          elif self.steerMode == "shrink":
+            forceVector[dim] = (startIJK[dim] - endIJK[dim])
+            pos[dim] = int( round(startIJK[dim]) )
+
+          forceMag += forceVector[dim] ** 2
         
         forceMag = math.sqrt(forceMag)
 
         # CL array index is reverse of VTK image index
+        forceVector.reverse()
         pos.reverse()
 
         for dim in xrange(3):
@@ -1388,40 +1448,39 @@ class SteeredFluidRegLogic(object):
         # TODO: do CL array access and updates in groups? more efficient? create index matrix and then do subset ops?
             
         # Find vector along grad that projects to the force vector described on the plane
-        gvec = [0.0, 0.0, 0.0]
+        if self.steerMode == "pull":
+        # TODO: do we do this when doing expand/shrink?
+          gvec = [0.0, 0.0, 0.0]
 
-        gmag = 0.0
-        for dim in xrange(3):
-          grad_array = gradientsCL_down[dim].clarray
-          g = grad_array[ pos[0], pos[1], pos[2] ]
-          gvec[dim] = g.get()[()] # Convert to scalar
-          gmag += gvec[dim] ** 2
-        gmag = math.sqrt(gmag)
-        if gmag == 0.0:
-          continue
+          gmag = 0.0
+          for dim in xrange(3):
+            grad_array = gradientsCL_down[dim].clarray
+            g = grad_array[ pos[0], pos[1], pos[2] ]
+            gvec[dim] = g.get()[()] # Convert to scalar
+            gmag += gvec[dim] ** 2
+          gmag = math.sqrt(gmag)
+          if gmag == 0.0:
+            continue
             
-        gdotf = 0
-        for dim in xrange(3):
-          gvec[dim] = gvec[dim] / gmag
-          gdotf += gvec[dim] * forceVector[dim]
-        if gdotf == 0.0:
-          continue
+          gdotf = 0
+          for dim in xrange(3):
+            gvec[dim] = gvec[dim] / gmag
+            gdotf += gvec[dim] * forceVector[dim]
+          if gdotf == 0.0:
+            continue
+
+          for dim in xrange(3):
+            forceVector[dim] = gvec[dim] * forceMag**2.0 / gdotf
 
         for dim in xrange(3):
           mom_array = momentasCL_down[dim].clarray
           mom_array[ pos[0], pos[1], pos[2] ] += \
-            gvec[dim] * forceMag**2.0 / gdotf
-          #  forceVector[dim]
+            forceVector[dim]
 
     velocitiesCL_down = [None, None, None]
     for dim in xrange(3):
-      largeV = momentasCL_down[dim].recursive_gaussian(15.0, 15.0, 15.0)
-      largeV.scale(self.viscosity)
-
-      smallV = momentasCL_down[dim].recursive_gaussian(5.0, 5.0, 5.0)
-
-      velocitiesCL_down[dim] = smallV
-      velocitiesCL_down[dim].add_inplace(largeV)
+      velocitiesCL_down[dim] = \
+        momentasCL_down[dim].recursive_gaussian(self.fluidKernelWidth)
       
     # Compute max velocity
     velocMagCL = velocitiesCL_down[0].multiply(velocitiesCL_down[0])
@@ -1439,13 +1498,14 @@ class SteeredFluidRegLogic(object):
       
     maxVeloc = math.sqrt(maxVeloc)
 
-    if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
+    #if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
+    if isArrowUsed or self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
       self.fluidDelta = 2.0 / maxVeloc
 
     for dim in xrange(3):
       velocitiesCL_down[dim].scale(self.fluidDelta)
 
-    # Reset delta for next iteration if we used an impulse
+    # Reset delta for next iteration if we used a user-defined impulse
     # TODO: control
     if isArrowUsed:
       self.fluidDelta = 0.0
@@ -1455,17 +1515,9 @@ class SteeredFluidRegLogic(object):
 
     self.deformationCL_down = self.deformationCL_down.compose(
       smallDeformationCL_down)
-    self.deformationCL = self.deformationCL_down.compose(self.identityCL)
-    #self.deformationCL = self.deformationCL_down.resample(
-    #  self.fixedImageCL.shape)
 
-    self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
-    self.outputImageCL_down = self.identityCL_down.applyTo(
-      self.outputImageCL)
-    #self.outputImageCL_down = self.deformationCL_down.applyTo(
-    #  self.movingImageCL)
-
-    self.updateOutputVolume(self.outputImageCL)
+    self.outputImageCL_down = self.deformationCL_down.applyTo(
+      self.movingImageCL)
 
   def processEvent(self,observee,event=None):
 
@@ -1514,7 +1566,7 @@ class SteeredFluidRegLogic(object):
       
       elif event == "LeftButtonPressEvent":
       
-        if nodeIndex > 2 and self.lastHoveredGradMag > 0.01:
+        if self.steerMode == "pull" and nodeIndex > 2 and self.lastHoveredGradMag > 0.01:
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
         
@@ -1524,7 +1576,7 @@ class SteeredFluidRegLogic(object):
 
           self.startEventPosition = ras
         
-          self.actionState = "arrowStart"
+          self.actionState = "pullStart"
         
           self.arrowStartXY = xy
           self.arrowStartRAS = ras
@@ -1584,15 +1636,49 @@ class SteeredFluidRegLogic(object):
           otherSliceView = otherSliceWidget.sliceView()
           otherSliceStyle = otherSliceWidget.interactorStyle()
           otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor2D(self.movingContourActor)
+
+        elif self.steerMode == "expand" and nodeIndex > 2:
+
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+        
+          xy = style.GetInteractor().GetEventPosition()
+          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+
+          self.startEventPosition = ras
+        
+          self.actionState = "expandStart"
+
+          self.expandStartTime = time.clock()
+        
+          self.arrowStartXY = xy
+          self.arrowStartRAS = ras
+
+        elif self.steerMode == "shrink" and nodeIndex > 2:
+
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+        
+          xy = style.GetInteractor().GetEventPosition()
+          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+
+          self.startEventPosition = ras
+        
+          self.actionState = "shrinkStart"
+
+          self.arrowStartXY = xy
+          self.arrowStartRAS = ras
       
         else:
-          self.actionState = "arrowReject"
+          self.actionState = "clickReject"
 
         self.abortEvent(event)
 
       elif event == "LeftButtonReleaseEvent":
       
-        if self.actionState == "arrowStart":
+        if self.actionState == "pullStart":
           cursor = qt.QCursor(qt.Qt.OpenHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1621,15 +1707,65 @@ class SteeredFluidRegLogic(object):
           otherSliceStyle = otherSliceWidget.interactorStyle()
           otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor2D(self.movingContourActor)
 
+        if self.actionState == "expandStart":
+          cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+          app.setOverrideCursor(cursor)
+
+          # TODO: only draw arrow within ??? seconds
+          self.lastDrawMTime = sliceNode.GetMTime()
+          
+          self.lastDrawSliceWidget = sliceWidget
+
+          a = self.arrowStartXY
+          for i in xrange(len(self.expandShrinkVectors)):
+            v = self.expandShrinkVectors[i]
+            xy = (a[0]+v[0], a[1]+v[1], 0.0)
+
+            xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+            ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+
+            arrowEndXY = xy
+            arrowEndRAS = ras
+
+            self.arrowQueue.put(
+              (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, arrowEndXY, self.arrowStartRAS, arrowEndRAS) )
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+
+        if self.actionState == "shrinkStart":
+          cursor = qt.QCursor(qt.Qt.OpenHandCursor)
+          app.setOverrideCursor(cursor)
+
+          # TODO: only draw arrow within ??? seconds
+          self.lastDrawMTime = sliceNode.GetMTime()
+          
+          self.lastDrawSliceWidget = sliceWidget
+
+          a = self.arrowStartXY
+          for i in xrange(len(self.expandShrinkVectors)):
+            v = self.expandShrinkVectors[i]
+            xy = (a[0]+v[0], a[1]+v[1], 0.0)
+
+            xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
+            ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
+
+            arrowEndXY = xy
+            arrowEndRAS = ras
+
+            self.arrowQueue.put(
+              (sliceNode.GetMTime(), sliceWidget, arrowEndXY, self.arrowStartXY, arrowEndRAS, self.arrowStartRAS) )
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+
         self.actionState = "interacting"
         
         self.abortEvent(event)
 
       elif event == "MouseMoveEvent":
 
-        if self.actionState == "interacting":
+        if self.actionState == "interacting" and self.steerMode == "pull":
 
-          # Hovering
+          # Hovering when pulling -> change cursors based on gradient
           
           xy = style.GetInteractor().GetEventPosition()
           xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
@@ -1653,9 +1789,9 @@ class SteeredFluidRegLogic(object):
             
           self.lastHoveredGradMag = g
 
-        elif self.actionState == "arrowStart":
+        elif self.actionState == "pullStart":
 
-          # Dragging / drawing an arrow
+          # Drawing an arrow that pulls/drags voxels
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1691,9 +1827,7 @@ class SteeredFluidRegLogic(object):
           glyphArrow.SetSource(arrowSource.GetOutput())
           glyphArrow.ScalingOn()
           glyphArrow.OrientOn()
-          # TODO figure out proper scaling factor or arrow source size
-          #glyphArrow.SetScaleFactor(0.001)
-          glyphArrow.SetScaleFactor(2.0)
+          glyphArrow.SetScaleFactor(1.0)
           glyphArrow.SetVectorModeToUseVector()
           glyphArrow.SetScaleModeToScaleByVector()
           glyphArrow.Update()
@@ -1702,11 +1836,198 @@ class SteeredFluidRegLogic(object):
           mapper.SetInput(glyphArrow.GetOutput())
       
           self.movingArrowActor.SetMapper(mapper)
+#TODO
+          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
+          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
 
           style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
 
           #self.movingContourActor.SetPosition(worldXY)
           self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
+
+        elif self.actionState == "expandStart":
+
+          # Drawing arrows for local expansion
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+
+          xy = style.GetInteractor().GetEventPosition()
+
+          coord = vtk.vtkCoordinate()
+          coord.SetCoordinateSystemToDisplay()
+
+          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          coord.SetValue(xy[0], xy[1], 0.0)
+          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          # TODO: click and hold mode? requires a timer for detection
+          #arrowSize = (time.clock() - self.expandStartTime) * 0.1
+          arrowSize = 0.0
+          for dim in xrange(2):
+            arrowSize += (xy[dim] - self.arrowStartXY[dim]) ** 2.0
+          arrowSize = math.sqrt(arrowSize)
+          dArrowSize = 0.7 * arrowSize
+
+          worldArrowSize = 0.0
+          for dim in xrange(3):
+            worldArrowSize += (worldXY[dim] - worldStartXY[dim]) ** 2.0
+          worldArrowSize = math.sqrt(worldArrowSize)
+          dWorldArrowSize = 0.7*worldArrowSize
+
+          pts = vtk.vtkPoints()
+          for count in xrange(8):
+            pts.InsertNextPoint(worldStartXY)
+
+          self.expandShrinkVectors = []
+          self.expandShrinkVectors.append( (arrowSize, 0) )
+          self.expandShrinkVectors.append( (-arrowSize, 0) )
+          self.expandShrinkVectors.append( (0, arrowSize) )
+          self.expandShrinkVectors.append( (0, -arrowSize) )
+          self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
+          self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
+          self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
+          self.expandShrinkVectors.append( (-dArrowSize, -dArrowSize) )
+
+          worldExpandShrinkVectors = []
+          worldExpandShrinkVectors.append( (worldArrowSize, 0) )
+          worldExpandShrinkVectors.append( (-worldArrowSize, 0) )
+          worldExpandShrinkVectors.append( (0, worldArrowSize) )
+          worldExpandShrinkVectors.append( (0, -worldArrowSize) )
+          worldExpandShrinkVectors.append( (dWorldArrowSize, dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (dWorldArrowSize, -dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (-dWorldArrowSize, dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (-dWorldArrowSize, -dWorldArrowSize) )
+
+          vectors = vtk.vtkDoubleArray()
+          vectors.SetNumberOfComponents(3)
+          vectors.SetNumberOfTuples(8)
+          for count in xrange(8):
+            v = worldExpandShrinkVectors[count]
+            vectors.SetTuple3(count, v[0], v[1], 0.0)
+
+          pd = vtk.vtkPolyData()
+          pd.SetPoints(pts)
+          pd.GetPointData().SetVectors(vectors)
+
+          arrowSource = vtk.vtkArrowSource()
+
+          glyphArrow = vtk.vtkGlyph3D()
+          glyphArrow.SetInput(pd)
+          glyphArrow.SetSource(arrowSource.GetOutput())
+          glyphArrow.ScalingOn()
+          glyphArrow.OrientOn()
+          glyphArrow.SetScaleFactor(1.0)
+          glyphArrow.SetVectorModeToUseVector()
+          glyphArrow.SetScaleModeToScaleByVector()
+          glyphArrow.Update()
+      
+          mapper = vtk.vtkPolyDataMapper()
+          mapper.SetInput(glyphArrow.GetOutput())
+      
+          self.movingArrowActor.SetMapper(mapper)
+# TODO
+          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
+          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
+
+        elif self.actionState == "shrinkStart":
+
+          # Drawing arrows for local shrinkage
+          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
+          app.setOverrideCursor(cursor)
+
+          xy = style.GetInteractor().GetEventPosition()
+
+          coord = vtk.vtkCoordinate()
+          coord.SetCoordinateSystemToDisplay()
+
+          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          coord.SetValue(xy[0], xy[1], 0.0)
+          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+          # TODO: click and hold mode? requires a timer for detection
+          #arrowSize = (time.clock() - self.expandStartTime) * 0.1
+          arrowSize = 0.0
+          for dim in xrange(2):
+            arrowSize += (xy[dim] - self.arrowStartXY[dim]) ** 2.0
+          arrowSize = math.sqrt(arrowSize)
+          dArrowSize = 0.7 * arrowSize
+
+          worldArrowSize = 0.0
+          for dim in xrange(3):
+            worldArrowSize += (worldXY[dim] - worldStartXY[dim]) ** 2.0
+          worldArrowSize = math.sqrt(worldArrowSize)
+          dWorldArrowSize = 0.7*worldArrowSize
+
+          self.expandShrinkVectors = []
+          self.expandShrinkVectors.append( (arrowSize, 0) )
+          self.expandShrinkVectors.append( (-arrowSize, 0) )
+          self.expandShrinkVectors.append( (0, arrowSize) )
+          self.expandShrinkVectors.append( (0, -arrowSize) )
+          self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
+          self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
+          self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
+          self.expandShrinkVectors.append( (-dArrowSize, -dArrowSize) )
+
+          wa = worldStartXY
+
+          pts = vtk.vtkPoints()
+          pts.InsertNextPoint(wa[0]+worldArrowSize, wa[1], wa[2])
+          pts.InsertNextPoint(wa[0]-worldArrowSize, wa[1], wa[2])
+          pts.InsertNextPoint(wa[0], wa[1]+worldArrowSize, wa[2])
+          pts.InsertNextPoint(wa[0], wa[1]-worldArrowSize, wa[2])
+          pts.InsertNextPoint(wa[0]+dWorldArrowSize, wa[1]+dWorldArrowSize, wa[2])
+          pts.InsertNextPoint(wa[0]+dWorldArrowSize, wa[1]-dWorldArrowSize, wa[2])
+          pts.InsertNextPoint(wa[0]-dWorldArrowSize, wa[1]+dWorldArrowSize, wa[2])
+          pts.InsertNextPoint(wa[0]-dWorldArrowSize, wa[1]-dWorldArrowSize, wa[2])
+
+          worldExpandShrinkVectors = []
+          worldExpandShrinkVectors.append( (-worldArrowSize, 0) )
+          worldExpandShrinkVectors.append( (worldArrowSize, 0) )
+          worldExpandShrinkVectors.append( (0, -worldArrowSize) )
+          worldExpandShrinkVectors.append( (0, worldArrowSize) )
+          worldExpandShrinkVectors.append( (-dWorldArrowSize, -dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (-dWorldArrowSize, dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (dWorldArrowSize, -dWorldArrowSize) )
+          worldExpandShrinkVectors.append( (dWorldArrowSize, dWorldArrowSize) )
+
+          vectors = vtk.vtkDoubleArray()
+          vectors.SetNumberOfComponents(3)
+          vectors.SetNumberOfTuples(8)
+          for count in xrange(8):
+            v = worldExpandShrinkVectors[count]
+            vectors.SetTuple3(count, v[0], v[1], 0.0)
+
+          pd = vtk.vtkPolyData()
+          pd.SetPoints(pts)
+          pd.GetPointData().SetVectors(vectors)
+
+          arrowSource = vtk.vtkArrowSource()
+
+          glyphArrow = vtk.vtkGlyph3D()
+          glyphArrow.SetInput(pd)
+          glyphArrow.SetSource(arrowSource.GetOutput())
+          glyphArrow.ScalingOn()
+          glyphArrow.OrientOn()
+          glyphArrow.SetScaleFactor(1.0)
+          glyphArrow.SetVectorModeToUseVector()
+          glyphArrow.SetScaleModeToScaleByVector()
+          glyphArrow.Update()
+      
+          mapper = vtk.vtkPolyDataMapper()
+          mapper.SetInput(glyphArrow.GetOutput())
+      
+          self.movingArrowActor.SetMapper(mapper)
+#TODO
+          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
+          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
+
+          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
           
         else:
           pass
@@ -1811,9 +2132,7 @@ class SteeredFluidRegLogic(object):
       glyphArrow.SetSource(arrowSource.GetOutput())
       glyphArrow.ScalingOn()
       glyphArrow.OrientOn()
-      # TODO figure out proper scaling factor or arrow source size
-      #glyphArrow.SetScaleFactor(0.001)
-      glyphArrow.SetScaleFactor(2.0)
+      glyphArrow.SetScaleFactor(1.0)
       glyphArrow.SetVectorModeToUseVector()
       glyphArrow.SetScaleModeToScaleByVector()
       glyphArrow.Update()
@@ -1822,7 +2141,8 @@ class SteeredFluidRegLogic(object):
       mapper.SetInput(glyphArrow.GetOutput())
       
       self.arrowsActor.SetMapper(mapper)
-      #self.arrowsActor.GetProperty().SetColor([1.0, 0.0, 0.0])
+      self.arrowsActor.GetProperty().SetColor([0.1, 0.1, 0.9])
+      self.arrowsActor.GetProperty().SetOpacity(0.5)
 
       # TODO add actors to the appropriate widgets (or all?)
       # TODO make each renwin have two ren's from beginning?
