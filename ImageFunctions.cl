@@ -465,4 +465,60 @@ __kernel void identity(
 
 }
 
+//
+// Splatting and adding 3D user inputs into an image
+//
+
+__kernel void add_splat3(
+  __global float* posM,
+  __global float* valueM,
+  __global float* sigmaM,
+  __global uint* numV,
+  __global float* outx,
+  __global float* outy,
+  __global float* outz,
+  __global uint* size,
+  __global float* spacing)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= size[0] || row >= size[1] || column >= size[2])
+    return;
+
+  uint n = numV[0];
+
+  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+
+  float x = convert_float(slice) * spacing[0];
+  float y = convert_float(row) * spacing[1];
+  float z = convert_float(column) * spacing[2];
+
+  float sumV = 0.0;
+  for (uint i = 0; i < n; i++)
+  {
+    //float dx = (x - posM[i]);
+    //float dy = (y - posM[i+n]);
+    //float dz = (z - posM[i+n*2]);
+    float dx = (x - posM[i*3]);
+    float dy = (y - posM[i*3+1]);
+    float dz = (z - posM[i*3+2]);
+
+    float u = (dx*dx + dy*dy + dz*dz) / sigmaM[i];
+
+    float weight = 1.0 / (1.0 + u);
+
+    if (weight > 0.01)
+    {
+      //outx[offset] += weight * valueM[i];
+      //outy[offset] += weight * valueM[i+n];
+      //outz[offset] += weight * valueM[i+n*2];
+      outx[offset] += weight * valueM[i*3];
+      outy[offset] += weight * valueM[i*3+1];
+      outz[offset] += weight * valueM[i*3+2];
+    }
+  }
+}
+
 // vim: filetype=C

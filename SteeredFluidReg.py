@@ -102,6 +102,8 @@ class ImageCL:
     #narray = narray.astype('float32')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
+    vtkimage = None
+
   def toVTKImage(self):
     narray = self.clarray.get().astype('float32')
     #narray = narray.transpose(2, 1, 0)
@@ -121,6 +123,13 @@ class ImageCL:
     vtkimage.Modified()
 
     return vtkimage
+
+  def copyToVolume(self, volume):
+    volume.SetOrigin(self.origin[2], self.origin[1], self.origin[0])
+    volume.SetSpacing(self.spacing[2], self.spacing[1], self.spacing[0])
+
+    vtkimage = self.toVTKImage()
+    volume.SetAndObserveImageData(vtkimage)
 
   def fill(self, value):
     self.clarray.fill(value)
@@ -249,6 +258,9 @@ class ImageCL:
       var_array.data, width_array.data,
       outimgcl.clarray.data).wait()
 
+    var_array = None
+    width_array = None
+
     return outimgcl
 
   def recursive_gaussian(self, sigma):
@@ -273,7 +285,15 @@ class ImageCL:
       (sizeY, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sigma_array.data).wait()
 
+    sigma_array = None
+
     return outimgcl
+
+  def get_resampled_spacing(self, targetShape):
+    re_spacing = [1.0, 1.0, 1.0]
+    for dim in xrange(3):
+      re_spacing[dim] = (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
+    return re_spacing
 
   def resample(self, targetShape):
 
@@ -291,16 +311,13 @@ class ImageCL:
 
     outimgcl = self.clone_empty()
 
-    for dim in xrange(3):
-      outimgcl.shape[dim] = targetShape[dim]
-      outimgcl.spacing[dim] = \
-        (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
+    outimgcl.shape = list(targetShape)
+    outimgcl.spacing = self.get_resampled_spacing(targetShape)
 
+    for dim in xrange(3):
       outimgcl.clsize[dim] = targetShape[dim]
       outimgcl.clspacing[dim] = outimgcl.spacing[dim]
 
-
-    # Resize cl array
     outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, n.float32)
 
     hxclarray = cl.array.zeros_like(outimgcl.clarray)
@@ -322,28 +339,34 @@ class ImageCL:
     hyclarray = None
     hzclarray = None
 
-    """
-
-    # CPU
-    outimgcl = self.clone()
-
-    vtkimage = self.toVTKImage()
-
-    outspacing = list(self.spacing)
-    for dim in xrange(3):
-      outspacing[dim] = (self.spacing[dim] * self.shape[dim]) / targetShape[dim]
-
-    outimgcl.shape = targetShape
-    outimgcl.spacing = outspacing
-
-    resizef = vtk.vtkImageResize()
-    resizef.SetResizeMethodToOutputDimensions()
-    resizef.SetOutputDimensions(targetShape[2], targetShape[1], targetShape[0])
-    resizef.SetInput(vtkimage)
-    resizef.Update()
-    """
-
     return outimgcl
+
+  @staticmethod
+  def add_splat3(outimages, posM, valueM, sigmaM):
+    # Adds splatted forces fx,fy,fz to hx,hy,hz
+    shape = outimages[0].shape
+
+    clqueue = outimages[0].clqueue
+    clsize = outimages[0].clsize
+    clspacing = outimages[0].clspacing
+    clprogram = outimages[0].clprogram
+
+    clposM = cl.array.to_device(clqueue, posM)
+    clvalueM = cl.array.to_device(clqueue, valueM)
+    clsigmaM = cl.array.to_device(clqueue, sigmaM)
+
+    clnumV = cl.array.to_device(clqueue, n.array([posM.shape[0],], n.uint32))
+
+    clprogram.add_splat3(clqueue, shape, None,
+      clposM.data,
+      clvalueM.data,
+      clsigmaM.data,
+      clnumV.data,
+      outimages[0].clarray.data,
+      outimages[1].clarray.data,
+      outimages[2].clarray.data,
+      clsize.data,
+      clspacing.data).wait()
 
 #
 # DeformationCL
@@ -417,7 +440,11 @@ class DeformationCL:
 
     H_new = [hx_new, hy_new, hz_new]
 
-    return DeformationCL(hx_new, H_new)
+    outdef = DeformationCL(hx_new, H_new)
+
+    H_new = None
+
+    return outdef
 
   def applyTo(self, vol):
     # Output image is in the same grid as h
@@ -439,13 +466,11 @@ class DeformationCL:
 
     H_new = [hx_new, hy_new, hz_new]
 
-    return DeformationCL(otherdef.clgrid, H_new)
+    outdef = DeformationCL(otherdef.clgrid, H_new)
 
-  def splat_force(self, forces):
-    # TODO: CL kernel that splats forces fx,fy,fz to hx,hy,hz
-    # splat(fx, fy, fz, fPositions, numF, hx, hy, hz, hsize, hspacing)
-    # at each pos, check proximity to forces then add weighted values
-    pass
+    H_new = None
+
+    return outdef
 
 # TODO add support for downsampling and upsampling
 # first in ImageCL then here as well
@@ -670,6 +695,25 @@ class SteeredFluidRegWidget:
 
     uiOptFormLayout.addRow("Steering Mode: ", steerModeLayout)
 
+    # TODO:
+    # Grid for image display
+    # use QSpinBoxes like deformation grid
+    # Determines output volume size, so we can accomodate large images
+    # like 500x500x500, that needs CPU resampling at the end
+    # use this smaller image grid for steering, when started do
+    # downsampling with CPU, when stopped upsample to original grid with CPU
+    # TODO: needs ImageCL.copyToVolume(outputVolume)
+
+    display_spinBoxLayout = qt.QGridLayout()
+    self.displayGridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
+    for dim in xrange(3):
+      self.displayGridSpinBoxes[dim].setRange(16, 256)
+      self.displayGridSpinBoxes[dim].setSingleStep(2)
+      self.displayGridSpinBoxes[dim].setValue(256)
+      display_spinBoxLayout.addWidget(self.displayGridSpinBoxes[dim], 0, dim)
+
+    uiOptFormLayout.addRow("Display Grid: ", display_spinBoxLayout)
+
     # Floating image opacity
     self.opacitySlider = ctk.ctkSliderWidget()
     self.opacitySlider.decimals = 2
@@ -701,13 +745,15 @@ class SteeredFluidRegWidget:
     # Layout within the parameter collapsible button
     regOptFormLayout = qt.QFormLayout(regOptCollapsibleButton)
 
-    spinBoxLayout = qt.QGridLayout()
-    self.gridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
+    warp_spinBoxLayout = qt.QGridLayout()
+    self.warpGridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
     for dim in xrange(3):
-      self.gridSpinBoxes[dim].setValue(64)
-      spinBoxLayout.addWidget(self.gridSpinBoxes[dim], 0, dim)
+      self.warpGridSpinBoxes[dim].setRange(16, 128)
+      self.warpGridSpinBoxes[dim].setSingleStep(2)
+      self.warpGridSpinBoxes[dim].setValue(64)
+      warp_spinBoxLayout.addWidget(self.warpGridSpinBoxes[dim], 0, dim)
 
-    regOptFormLayout.addRow("Deformation Grid: ", spinBoxLayout)
+    regOptFormLayout.addRow("Deformation Grid: ", warp_spinBoxLayout)
     # TODO: regridding callback in logic
 
     # Fluid kernel width
@@ -717,11 +763,22 @@ class SteeredFluidRegWidget:
     self.fluidKernelWidth.minimum = 0.5
     self.fluidKernelWidth.maximum = 50.0
     self.fluidKernelWidth.toolTip = "Area of effect for deformation forces."
-    regOptFormLayout.addRow("Deformation Stiffness:", self.fluidKernelWidth)
+    regOptFormLayout.addRow("Deformation Stiffness: ", self.fluidKernelWidth)
 
     self.fluidKernelWidth.value = self.logic.fluidKernelWidth
 
-    sliders = (self.drawIterationSlider, self.fluidKernelWidth, self.opacitySlider)
+    self.userInputWeight = ctk.ctkSliderWidget()
+    self.userInputWeight.decimals = 1
+    self.userInputWeight.singleStep = 0.1
+    self.userInputWeight.minimum = 0.0
+    self.userInputWeight.maximum = 100.0
+    self.userInputWeight.toolTip = "Weight for user input."
+    regOptFormLayout.addRow("User Steer Weight: ", self.userInputWeight)
+
+    self.userInputWeight.value = self.logic.userInputWeight
+
+    sliders = (self.drawIterationSlider, self.fluidKernelWidth,
+      self.opacitySlider, self.userInputWeight)
     for slider in sliders:
       slider.connect('valueChanged(double)', self.updateLogicFromGUI)
 
@@ -798,6 +855,7 @@ class SteeredFluidRegWidget:
     
     self.logic.drawIterations = self.drawIterationSlider.value
     self.logic.fluidKernelWidth = self.fluidKernelWidth.value
+    self.logic.userInputWeight = self.userInputWeight.value
     self.logic.opacity = self.opacitySlider.value
 
     self.logic.debugMessages = self.debugButton.checked
@@ -993,8 +1051,9 @@ class SteeredFluidRegLogic(object):
     self.timer = None
 
     # parameter defaults
-    self.drawIterations = 5
+    self.drawIterations = 2
     self.fluidKernelWidth = 15.0
+    self.userInputWeight = 1.0
     self.opacity = 0.5
 
     # TODO
@@ -1038,8 +1097,18 @@ class SteeredFluidRegLogic(object):
     self.expandShrinkVectors = []
     
     self.arrowsActor = vtk.vtkActor()
+    self.arrowsMapper = vtk.vtkPolyDataMapper()
+    self.arrowsGlyph = vtk.vtkGlyph3D()
 
     self.movingArrowActor = vtk.vtkActor()
+    self.movingArrowMapper = vtk.vtkPolyDataMapper()
+    self.movingArrowGlyph = vtk.vtkGlyph3D()
+
+    self.arrowsActor.GetProperty().SetOpacity(0.5)
+    self.arrowsActor.GetProperty().SetColor([0.1, 0.8, 0.1])
+
+    self.movingArrowActor.GetProperty().SetOpacity(0.5)
+    self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
 
     self.movingContourActor = vtk.vtkActor2D()
     #self.movingContourActor = vtk.vtkImageActor()
@@ -1125,7 +1194,7 @@ class SteeredFluidRegLogic(object):
     for dim in xrange(3):
       #fixedShape_down[dim] = fixedShape_down[dim] / 2
       fixedShape_down[dim] = \
-        min(fixedShape_down[dim], widget.gridSpinBoxes[dim].value)
+        min(fixedShape_down[dim], widget.warpGridSpinBoxes[dim].value)
     self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
 
     self.ratios_down = [1.0, 1.0, 1.0]
@@ -1174,6 +1243,19 @@ class SteeredFluidRegLogic(object):
 
     outputVolume = widget.outputSelector.currentNode()  
 
+    """
+    displayShape = self.fixedImageCL.shape
+    for dim in xrange(3):
+      displayShape[dim] = min(
+        displayShape[dim], widget.displayGridSpinBoxes[dim].value)
+
+    imgcl_gridded = imgcl.resample(displayShape)
+    imgcl_gridded.copyToVolume(outputVolume)
+
+    # TODO: need ratios / mapping between screen and grad mag image
+    # displayGridRatios, warpGridRatios
+    """
+
     vtkimage = imgcl.toVTKImage()
   
     #castf = vtk.vtkImageCast()
@@ -1183,11 +1265,16 @@ class SteeredFluidRegLogic(object):
   
     #outputVolume.GetImageData().GetPointData().SetScalars( castf.GetOutput().GetPointData().GetScalars() )
 
-    outputVolume.GetImageData().GetPointData().SetScalars( vtkimage.GetPointData().GetScalars() )
-    outputVolume.GetImageData().GetPointData().GetScalars().Modified()
-    outputVolume.GetImageData().Modified()
-    outputVolume.Modified()
-    
+    oldimage = outputVolume.GetImageData()
+
+    outputVolume.SetAndObserveImageData(vtkimage)
+    #outputVolume.GetImageData().GetPointData().SetScalars( vtkimage.GetPointData().GetScalars() )
+    #outputVolume.GetImageData().GetPointData().GetScalars().Modified()
+    #outputVolume.GetImageData().Modified()
+    #outputVolume.Modified()
+
+    del oldimage
+
     gradimgcl = imgcl.gradient_magnitude()
     gradimgcl.normalize()
 
@@ -1284,7 +1371,10 @@ class SteeredFluidRegLogic(object):
     self.identityCL_down = DeformationCL(self.fixedImageCL_down)
     self.deformationCL_down = self.identityCL_down
 
-    self.identityCL = DeformationCL(self.fixedImageCL)
+# TODO:
+# resample output volume to display grid using CPU
+# set identityCL and deformationCL to be this size
+    self.identityCL = DeformationCL(self.outputImageCL)
     self.deformationCL = self.identityCL
     
     self.fluidDelta = 0.0
@@ -1303,9 +1393,20 @@ class SteeredFluidRegLogic(object):
   
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registration iteration %d' %(self.registrationIterationNumber))
+
+    isArrowUsed = False
     
-    # TODO: break down into computeImageMomenta, addUserControl, deformImages?
-    self.fluidUpdate()
+    [gradientsCL, momentasCL] = self.computeImageForces()
+
+    if not self.arrowQueue.empty():
+      self.addUserControl(gradientsCL, momentasCL)
+      isArrowUsed = True
+
+    gradientsCL = None
+
+    self.updateDeformation(momentasCL, isArrowUsed)
+
+    momentasCL = None
    
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
@@ -1314,7 +1415,7 @@ class SteeredFluidRegLogic(object):
       #  self.fixedImageCL.shape)
       self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
 
-      #TODO: display downsampled output image instead?
+      #TODO: deformationCL and outputImageCL need to be in display grid
 
       self.updateOutputVolume(self.outputImageCL)
       self.redrawSlices()
@@ -1323,7 +1424,7 @@ class SteeredFluidRegLogic(object):
     if self.interaction:
       qt.QTimer.singleShot(self.interval, self.updateStep)
       
-  def fluidUpdate(self):
+  def computeImageForces(self):
     
     # Gradient descent: grad of output image * (fixed - output)
     diffImageCL_down = self.fixedImageCL_down.subtract(self.outputImageCL_down)
@@ -1334,148 +1435,155 @@ class SteeredFluidRegLogic(object):
     for dim in xrange(3):
       momentasCL_down[dim] = gradientsCL_down[dim].multiply(diffImageCL_down)
 
-    isArrowUsed = False
+    return [gradientsCL_down, momentasCL_down]
+
+  def addUserControl(self, gradientsCL_down, momentasCL_down):
     
     # Add user inputs to momentum vectors
     # User defined impulses are in arrow queue containing xy, RAS, slice widget
-    if not self.arrowQueue.empty():
 #TODO convert arrow queue to cl matrix
 # write GPU kernel to insert them into mom images
 # need rastoijk matrix
 
-      # TODO use axial reoriented fixed volume, skip using RAS matrix?
-      widget= slicer.modules.SteeredFluidRegWidget
+    # TODO use axial reoriented fixed volume, skip using RAS matrix?
+    widget= slicer.modules.SteeredFluidRegWidget
               
-      #fixedVolume = widget.fixedSelector.currentNode()
-      #movingVolume = widget.movingSelector.currentNode()
-      fixedVolume = self.axialFixedVolume
-      movingVolume = self.axialMovingVolume
+    #fixedVolume = widget.fixedSelector.currentNode()
+    #movingVolume = widget.movingSelector.currentNode()
+    fixedVolume = self.axialFixedVolume
+    movingVolume = self.axialMovingVolume
 
-      imageSize = fixedVolume.GetImageData().GetDimensions()
+    imageSize = fixedVolume.GetImageData().GetDimensions()
 
-      shape = momentasCL_down[0].shape
+    shape = momentasCL_down[0].shape
+    spacing = momentasCL_down[0].spacing
 
-      origin = movingVolume.GetOrigin()
+    origin = movingVolume.GetOrigin()
 
-      isArrowUsed = True
+    # Only do 10 arrows per iteration, TODO: allow user adjustment
+    numArrowsToProcess = min(self.arrowQueue.qsize(), 10)
 
-      # Only do 10 arrows per iteration, TODO: allow user adjustment
-      numArrowsToProcess = min(self.arrowQueue.qsize(), 10)
+    # for mapping drawn force to image grid
+    # TODO use reoriented volume with identity matrix?, skip using RAS matrix?
+    # issue with VTK negative coord in x,y ?
+    movingRAStoIJK = vtk.vtkMatrix4x4()
+    movingVolume.GetRASToIJKMatrix(movingRAStoIJK)
 
-      if self.debugMessages:
-        print "Folding in %d arrows" % numArrowsToProcess
+    if self.debugMessages:
+      print "Folding in %d arrows" % numArrowsToProcess
+      print "movingRAStoIJK = " + str(movingRAStoIJK)
 
-      # for mapping drawn force to image grid
-      # TODO use reoriented volume with identity matrix?, skip using RAS matrix?
-      # issue with VTK negative coord in x,y ?
-      movingRAStoIJK = vtk.vtkMatrix4x4()
-      movingVolume.GetRASToIJKMatrix(movingRAStoIJK)
+    forceX = n.zeros((numArrowsToProcess, 3), n.float32)
+    forceV = n.zeros((numArrowsToProcess, 3), n.float32)
+
+    # Splat size depends on amount of motion defined by user
+    sigmaM = n.zeros((numArrowsToProcess, 1), n.float32)
     
-      for count in xrange(numArrowsToProcess):
-        arrowTuple = self.arrowQueue.get()
+    for count in xrange(numArrowsToProcess):
+      arrowTuple = self.arrowQueue.get()
       
-        #print "arrowTuple = " + str(arrowTuple)
+      #print "arrowTuple = " + str(arrowTuple)
       
-        Mtime = arrowTuple[0]
-        sliceWidget = arrowTuple[1]
-        startXY = arrowTuple[2]
-        endXY = arrowTuple[3]
-        startRAS = arrowTuple[4]
-        endRAS = arrowTuple[5]
+      Mtime = arrowTuple[0]
+      sliceWidget = arrowTuple[1]
+      startXY = arrowTuple[2]
+      endXY = arrowTuple[3]
+      startRAS = arrowTuple[4]
+      endRAS = arrowTuple[5]
 
-        #TODO add arrow display to proper widget/view (in ???)
-      
-        #startXYZ = sliceWidget.sliceView().convertDeviceToXYZ(startXY)
-        #startRAS = sliceWidget.sliceView().convertXYZToRAS(startXYZ)
-      
-        #endXYZ = sliceWidget.sliceView().convertDeviceToXYZ(endXY)
-        #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
+      #TODO add arrow display to proper widget/view (in ???)
+    
+      #startXYZ = sliceWidget.sliceView().convertDeviceToXYZ(startXY)
+      #startRAS = sliceWidget.sliceView().convertXYZToRAS(startXYZ)
+    
+      #endXYZ = sliceWidget.sliceView().convertDeviceToXYZ(endXY)
+      #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
   
-        startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
-        endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
-        #startIJK = startRAS
-        #endIJK = endRAS
+      startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
+      endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
+      #startIJK = startRAS
+      #endIJK = endRAS
 
-        # Scale according to downsampling ratio
-        startIJK = list(startIJK)
-        endIJK = list(endIJK)
-        for dim in xrange(3):
-          startIJK[dim] *= self.ratios_down[dim]
-          endIJK[dim] *= self.ratios_down[dim]
-          #startIJK[dim] -= origin[dim]
-          #endIJK[dim] -= origin[dim]
-          #startIJK[dim] /= self.fixedImageCL_down.spacing[dim]
-          #endIJK[dim] /= self.fixedImageCL_down.spacing[dim]
-                
-        forceVector = [0, 0, 0]
-        forceMag = 0.0
+      # NOTE: CL array index is reverse of VTK image index
+      startIJK = list(startIJK)
+      endIJK = list(endIJK)
 
-        pos = [0, 0, 0]
-      
-        for dim in xrange(3):
-          # TODO automatically determine magnitude from the gradient update (balanced?)
-          # TODO need orientation adjustment when using RAS
-          #forceVector[dim] = (endRAS[dim] - startRAS[dim])
+      # TODO: DEBUG: need it in VTK order?
+      #startIJK.reverse()
+      #endIJK.reverse()
 
-          if self.steerMode == "pull":
-            forceVector[dim] = (startIJK[dim] - endIJK[dim])
-            pos[dim] = int( round(startIJK[dim]) )
-          elif self.steerMode == "expand":
-            forceVector[dim] = (startIJK[dim] - endIJK[dim])
-            pos[dim] = int( round(endIJK[dim]) )
-          elif self.steerMode == "shrink":
-            forceVector[dim] = (startIJK[dim] - endIJK[dim])
-            pos[dim] = int( round(startIJK[dim]) )
+      # Scale according to downsampling ratio
+      for dim in xrange(3):
+        startIJK[dim] *= self.ratios_down[dim]
+        endIJK[dim] *= self.ratios_down[dim]
 
-          forceMag += forceVector[dim] ** 2
-        
-        forceMag = math.sqrt(forceMag)
+      # TODO: use RAS (with origin and orient)
 
-        # CL array index is reverse of VTK image index
-        forceVector.reverse()
-        pos.reverse()
-
-        for dim in xrange(3):
-          if pos[dim] < 0:
-            pos[dim] = 0
-          if pos[dim] >= shape[dim]:
-            pos[dim] = shape[dim]-1
-
-        if self.debugMessages:
-          print "pos = " + str(pos)
-          print "forceVector = " + str(forceVector)
-
-        # TODO: do CL array access and updates in groups? more efficient? create index matrix and then do subset ops?
-            
-        # Find vector along grad that projects to the force vector described on the plane
+      sigma = 0.0
+      forceMag = 0.0
+      for dim in xrange(3):
         if self.steerMode == "pull":
-        # TODO: do we do this when doing expand/shrink?
-          gvec = [0.0, 0.0, 0.0]
+          d = (endIJK[dim] - startIJK[dim]) * spacing[dim]
+          forceX[count, dim] = startIJK[dim] * spacing[dim]
+        if self.steerMode == "expand":
+          d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
+          forceX[count, dim] = endIJK[dim] * spacing[dim]
+        if self.steerMode == "shrink":
+          d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
+          forceX[count, dim] = startIJK[dim] * spacing[dim]
 
-          gmag = 0.0
-          for dim in xrange(3):
-            grad_array = gradientsCL_down[dim].clarray
-            g = grad_array[ pos[0], pos[1], pos[2] ]
-            gvec[dim] = g.get()[()] # Convert to scalar
-            gmag += gvec[dim] ** 2
-          gmag = math.sqrt(gmag)
-          if gmag == 0.0:
-            continue
-            
-          gdotf = 0
-          for dim in xrange(3):
-            gvec[dim] = gvec[dim] / gmag
-            gdotf += gvec[dim] * forceVector[dim]
-          if gdotf == 0.0:
-            continue
+        #d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
+        #d = (endIJK[dim] - startIJK[dim]) * spacing[dim]
+        #forceX[count, dim] = startIJK[dim] * spacing[dim]
 
-          for dim in xrange(3):
-            forceVector[dim] = gvec[dim] * forceMag**2.0 / gdotf
+        forceV[count, dim] = d * self.userInputWeight
+
+        sigma += d*d
+        forceMag += forceV[count, dim] ** 2
+
+      sigmaM[count, 0] = sigma
+
+      forceMag = math.sqrt(forceMag)
+
+      # Find vector along grad at start position that projects to the force
+      # vector described on the plane
+      if self.steerMode == "pull":
 
         for dim in xrange(3):
-          mom_array = momentasCL_down[dim].clarray
-          mom_array[ pos[0], pos[1], pos[2] ] += \
-            forceVector[dim]
+          startIJK[dim] = int( round(startIJK[dim]) )
+          endIJK[dim] = int( round(endIJK[dim]) )
+
+          if startIJK[dim] < 0:
+            startIJK[dim] = 0
+          if startIJK[dim] >= shape[dim]:
+            startIJK[dim] = shape[dim]-1
+
+        gvec = [0.0, 0.0, 0.0]
+
+        gmag = 0.0
+        for dim in xrange(3):
+          grad_array = gradientsCL_down[dim].clarray
+          g = grad_array[ startIJK[0], startIJK[1], startIJK[2] ]
+          gvec[dim] = g.get()[()] # Convert to scalar
+          gmag += gvec[dim] ** 2
+        gmag = math.sqrt(gmag)
+        if gmag == 0.0:
+          continue
+          
+        gdotf = 0
+        for dim in xrange(3):
+          gvec[dim] = gvec[dim] / gmag
+          gdotf += gvec[dim] * forceV[count, dim]
+        if gdotf == 0.0:
+          continue
+
+        for dim in xrange(3):
+          forceV[count, dim] = gvec[dim] * forceMag**2.0 / gdotf
+
+    ImageCL.add_splat3(momentasCL_down, forceX, forceV, sigmaM)
+              
+
+  def updateDeformation(self, momentasCL_down, isArrowUsed):
 
     velocitiesCL_down = [None, None, None]
     for dim in xrange(3):
@@ -1699,7 +1807,9 @@ class SteeredFluidRegLogic(object):
           self.arrowQueue.put(
             (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.RemoveActor(self.movingArrowActor)
 
           otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
           otherSliceWidget = layoutManager.sliceWidget(otherSliceNode.GetLayoutName())
@@ -1730,7 +1840,9 @@ class SteeredFluidRegLogic(object):
             self.arrowQueue.put(
               (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, arrowEndXY, self.arrowStartRAS, arrowEndRAS) )
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.RemoveActor(self.movingArrowActor)
 
         if self.actionState == "shrinkStart":
           cursor = qt.QCursor(qt.Qt.OpenHandCursor)
@@ -1755,7 +1867,9 @@ class SteeredFluidRegLogic(object):
             self.arrowQueue.put(
               (sliceNode.GetMTime(), sliceWidget, arrowEndXY, self.arrowStartXY, arrowEndRAS, self.arrowStartRAS) )
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.RemoveActor(self.movingArrowActor)
 
         self.actionState = "interacting"
         
@@ -1822,25 +1936,22 @@ class SteeredFluidRegLogic(object):
 
           arrowSource = vtk.vtkArrowSource()
 
-          glyphArrow = vtk.vtkGlyph3D()
-          glyphArrow.SetInput(pd)
-          glyphArrow.SetSource(arrowSource.GetOutput())
-          glyphArrow.ScalingOn()
-          glyphArrow.OrientOn()
-          glyphArrow.SetScaleFactor(1.0)
-          glyphArrow.SetVectorModeToUseVector()
-          glyphArrow.SetScaleModeToScaleByVector()
-          glyphArrow.Update()
+          self.movingArrowGlyph.SetInput(pd)
+          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.ScalingOn()
+          self.movingArrowGlyph.OrientOn()
+          self.movingArrowGlyph.SetScaleFactor(1.0)
+          self.movingArrowGlyph.SetVectorModeToUseVector()
+          self.movingArrowGlyph.SetScaleModeToScaleByVector()
+          self.movingArrowGlyph.Update()
       
-          mapper = vtk.vtkPolyDataMapper()
-          mapper.SetInput(glyphArrow.GetOutput())
+          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
       
-          self.movingArrowActor.SetMapper(mapper)
-#TODO
-          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
-          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
+          self.movingArrowActor.SetMapper(self.movingArrowMapper)
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.AddActor(self.movingArrowActor)
 
           #self.movingContourActor.SetPosition(worldXY)
           self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
@@ -1913,25 +2024,22 @@ class SteeredFluidRegLogic(object):
 
           arrowSource = vtk.vtkArrowSource()
 
-          glyphArrow = vtk.vtkGlyph3D()
-          glyphArrow.SetInput(pd)
-          glyphArrow.SetSource(arrowSource.GetOutput())
-          glyphArrow.ScalingOn()
-          glyphArrow.OrientOn()
-          glyphArrow.SetScaleFactor(1.0)
-          glyphArrow.SetVectorModeToUseVector()
-          glyphArrow.SetScaleModeToScaleByVector()
-          glyphArrow.Update()
+          self.movingArrowGlyph.SetInput(pd)
+          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.ScalingOn()
+          self.movingArrowGlyph.OrientOn()
+          self.movingArrowGlyph.SetScaleFactor(1.0)
+          self.movingArrowGlyph.SetVectorModeToUseVector()
+          self.movingArrowGlyph.SetScaleModeToScaleByVector()
+          self.movingArrowGlyph.Update()
       
-          mapper = vtk.vtkPolyDataMapper()
-          mapper.SetInput(glyphArrow.GetOutput())
+          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
       
-          self.movingArrowActor.SetMapper(mapper)
-# TODO
-          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
-          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
+          self.movingArrowActor.SetMapper(self.movingArrowMapper)
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.AddActor(self.movingArrowActor)
 
         elif self.actionState == "shrinkStart":
 
@@ -2009,25 +2117,22 @@ class SteeredFluidRegLogic(object):
 
           arrowSource = vtk.vtkArrowSource()
 
-          glyphArrow = vtk.vtkGlyph3D()
-          glyphArrow.SetInput(pd)
-          glyphArrow.SetSource(arrowSource.GetOutput())
-          glyphArrow.ScalingOn()
-          glyphArrow.OrientOn()
-          glyphArrow.SetScaleFactor(1.0)
-          glyphArrow.SetVectorModeToUseVector()
-          glyphArrow.SetScaleModeToScaleByVector()
-          glyphArrow.Update()
+          self.movingArrowGlyph.SetInput(pd)
+          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.ScalingOn()
+          self.movingArrowGlyph.OrientOn()
+          self.movingArrowGlyph.SetScaleFactor(1.0)
+          self.movingArrowGlyph.SetVectorModeToUseVector()
+          self.movingArrowGlyph.SetScaleModeToScaleByVector()
+          self.movingArrowGlyph.Update()
       
-          mapper = vtk.vtkPolyDataMapper()
-          mapper.SetInput(glyphArrow.GetOutput())
+          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
       
-          self.movingArrowActor.SetMapper(mapper)
-#TODO
-          #self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
-          #self.movingArrowActor.GetProperty().SetOpacity(0.5)
+          self.movingArrowActor.SetMapper(self.movingArrowMapper)
 
-          style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.movingArrowActor)
+          renOverlay = self.getOverlayRenderer(
+            style.GetInteractor().GetRenderWindow() )
+          renOverlay.AddActor(self.movingArrowActor)
           
         else:
           pass
@@ -2061,6 +2166,8 @@ class SteeredFluidRegLogic(object):
       cmd.SetAbortFlag(1)
 
   def redrawSlices(self):
+    # TODO: memory leak
+
     layoutManager = slicer.app.layoutManager()
     sliceNodeCount = slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLSliceNode')
     for nodeIndex in xrange(sliceNodeCount):
@@ -2071,7 +2178,7 @@ class SteeredFluidRegLogic(object):
       if sliceWidget:
         renwin = sliceWidget.sliceView().renderWindow()
         rencol = renwin.GetRenderers()
-        if rencol.GetNumberOfItems() == 2:
+        if rencol.GetNumberOfItems() >= 2:
           rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
           
         renwin.Render()
@@ -2127,40 +2234,43 @@ class SteeredFluidRegLogic(object):
       #arrowSource.SetTipRadius(2.0 / winsize[0])
       #arrowSource.SetShaftRadius(1.0 / winsize[0])
 
-      glyphArrow = vtk.vtkGlyph3D()
-      glyphArrow.SetInput(pd)
-      glyphArrow.SetSource(arrowSource.GetOutput())
-      glyphArrow.ScalingOn()
-      glyphArrow.OrientOn()
-      glyphArrow.SetScaleFactor(1.0)
-      glyphArrow.SetVectorModeToUseVector()
-      glyphArrow.SetScaleModeToScaleByVector()
-      glyphArrow.Update()
+      self.arrowsGlyph.SetInput(pd)
+      self.arrowsGlyph.SetSource(arrowSource.GetOutput())
+      self.arrowsGlyph.ScalingOn()
+      self.arrowsGlyph.OrientOn()
+      self.arrowsGlyph.SetScaleFactor(1.0)
+      self.arrowsGlyph.SetVectorModeToUseVector()
+      self.arrowsGlyph.SetScaleModeToScaleByVector()
+      self.arrowsGlyph.Update()
       
-      mapper = vtk.vtkPolyDataMapper()
-      mapper.SetInput(glyphArrow.GetOutput())
+      self.arrowsMapper.SetInput(self.arrowsGlyph.GetOutput())
       
-      self.arrowsActor.SetMapper(mapper)
-      self.arrowsActor.GetProperty().SetColor([0.1, 0.1, 0.9])
-      self.arrowsActor.GetProperty().SetOpacity(0.5)
+      self.arrowsActor.SetMapper(self.arrowsMapper)
 
       # TODO add actors to the appropriate widgets (or all?)
       # TODO make each renwin have two ren's from beginning?
-      rencol = renwin.GetRenderers()
-      
-      if rencol.GetNumberOfItems() == 2:
-        renOverlay = rencol.GetItemAsObject(1)
-      else:
-        renOverlay = vtk.vtkRenderer()
-        renwin.SetNumberOfLayers(2)
-        renwin.AddRenderer(renOverlay)
+
+      renOverlay = self.getOverlayRenderer(renwin)
 
       renOverlay.AddActor(self.arrowsActor)
-      renOverlay.SetInteractive(0)
-      #renOverlay.SetLayer(1)
-      #renOverlay.ResetCamera()
 
       renwin.Render()
+
+  def getOverlayRenderer(self, renwin):
+    rencol = renwin.GetRenderers()
+      
+    renOverlay = None
+    if rencol.GetNumberOfItems() >= 2:
+      renOverlay = rencol.GetItemAsObject(1)
+    else:
+      renOverlay = vtk.vtkRenderer()
+      renwin.SetNumberOfLayers(2)
+      renwin.AddRenderer(renOverlay)
+
+    #renOverlay.SetInteractive(0)
+    #renOverlay.SetLayer(1)
+
+    return renOverlay
 
   def testingData(self):
     """Load some default data for development
