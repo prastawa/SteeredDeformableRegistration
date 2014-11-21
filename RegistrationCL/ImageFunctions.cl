@@ -559,15 +559,15 @@ __kernel void add_splat3(
   }
 }
 
-__kernel void applyPolyAffine(
-  __global float* centers,
-  __global float* widths,
-  __global float* matrices,
-  __global float* translations,
-  uint numAffines,
-  __global float* src, __global uint* size, __global float* spacing,
+__kernel void weightsPolyAffine(
+  __global float* center,
+  __global float* width,
+  __global uint* size, __global float* spacing, __global float* origin,
   __global float* dst)
 {
+  // Computes the Gaussian weight for an ROI given the anchor point, width, and
+  // an affine space described by origin, size, and spacing
+
   size_t column = get_global_id(2);
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
@@ -578,13 +578,56 @@ __kernel void applyPolyAffine(
   size_t offset = slice*size[1]*size[2] + row*size[2] + column;
 
   float p[3];
-  p[0] = convert_float(slice) * spacing[0];
-  p[1] = convert_float(row) * spacing[1];
-  p[2] = convert_float(column) * spacing[2];
+  p[0] = convert_float(slice) * spacing[0] + origin[0];
+  p[1] = convert_float(row) * spacing[1] + origin[1];
+  p[2] = convert_float(column) * spacing[2] + origin[2];
 
   float tp[3];
   for (uint dim = 0; dim < 3; dim++)
-    tp[dim] = 0;
+    //tp[dim] = 0;
+    tp[dim] = p[dim];
+
+  float dist = 0;
+  for (uint dim = 0; dim < 3; dim++)
+  {
+    float d = (p[dim] - center[dim]) / width[dim];
+    dist += d*d;
+  }
+
+  dst[offset] = exp(-0.5 * dist);
+}
+
+__kernel void applyPolyAffine(
+  __global float* centers,
+  __global float* widths,
+  __global float* matrices,
+  __global float* translations,
+  uint numAffines,
+  __global float* src,
+  __global uint* size, __global float* spacing, __global float* origin,
+  __global float* dst)
+{
+  // Apply poly affine transform to image region described by 
+  // origin, size, and spacing
+
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= size[0] || row >= size[1] || column >= size[2])
+    return;
+
+  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+
+  float p[3];
+  p[0] = convert_float(slice) * spacing[0] + origin[0];
+  p[1] = convert_float(row) * spacing[1] + origin[1];
+  p[2] = convert_float(column) * spacing[2] + origin[2];
+
+  float tp[3];
+  for (uint dim = 0; dim < 3; dim++)
+    //tp[dim] = 0;
+    tp[dim] = p[dim];
 
   float sumw = 0;
 
@@ -593,11 +636,11 @@ __kernel void applyPolyAffine(
     float dist = 0;
     for (uint dim = 0; dim < 3; dim++)
     {
-      float d = p[dim] - centers[i*3 + dim];
+      float d = (p[dim] - centers[i*3 + dim]) / widths[i*3 + dim];
       dist += d*d;
     }
 
-    float w = exp(-0.5 * dist / (widths[i]*widths[i]));
+    float w = exp(-0.5 * dist);
 
     sumw += w;
 

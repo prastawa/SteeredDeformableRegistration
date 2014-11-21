@@ -58,7 +58,7 @@ movingCL.fromArray(movingArray, fixedImage.GetSpacing())
 
 polyAffine = PolyAffineCL(fixedCL, movingCL)
 polyAffine.create_identity(4)
-polyAffine.optimize()
+polyAffine.optimize(20)
 
 warpedCL = polyAffine.movingCL
 warpedArray = warpedCL.clarray.get().astype('float32')

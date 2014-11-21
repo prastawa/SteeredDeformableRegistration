@@ -19,12 +19,41 @@ import pyopencl.clmath as clmath
 import numpy as n
 
 class ImageCL:
-  def __init__(self, clqueue=None, clprogram=None):
-    self.clqueue = clqueue
+  def __init__(self, preferredDeviceType="CPU")
 
-    # TODO: initialize clprogram with ImageFunctions.cl here?
-    # need to pass a preferred device type (CPU, GPU) to this class
-    self.clprogram = clprogram
+    self.preferredDeviceType = preferredDeviceType
+
+    # Create cl context and queue
+    self.clcontext = None
+    for platform in cl.get_platforms():
+      for device in platform.get_devices():
+        if cl.device_type.to_string(device.type) == preferredDeviceType:
+          self.clcontext = cl.Context([device])
+          print ("Using CL device: %s" % cl.device_type.to_string(device.type))
+          break;
+    if self.clcontext is None:
+      self.clcontext = cl.create_some_context()
+
+    self.clqueue = cl.CommandQueue(self.clcontext)
+
+    # Print CL device info
+    device = self.clcontext.devices[0]
+    print("Device name:", device.name)
+    print("Device type:", cl.device_type.to_string(device.type))
+    print("Device memory: ", device.global_mem_size//1024//1024, 'MB')
+    print("Device max clock speed:", device.max_clock_frequency, 'MHz')
+    print("Device compute units:", device.max_compute_units)
+
+    # Compile OpenCL code and create program object
+    # TODO: compile different code versions for different params and sizes?
+    sourcePath = os.path.dirname( os.path.realpath(__file__) )
+    clFileName = os.path.join(sourcePath, "ImageFunctions.cl")
+
+    fp = open(clFileName)
+    source = fp.read()
+    fp.close()
+
+    self.clprogram = cl.Program(self.clcontext, source).build()
 
     self.origin = [0.0, 0.0, 0.0]
     self.shape = [0, 0, 0]
@@ -41,7 +70,7 @@ class ImageCL:
 
   def clone_empty(self):
     """Clone self without filling in CL array data"""
-    outimgcl = ImageCL(self.clqueue, self.clprogram)
+    outimgcl = ImageCL(self.preferredDeviceType)
     outimgcl.origin = list(self.origin)
     outimgcl.shape = list(self.shape)
     outimgcl.spacing = list(self.spacing)
@@ -163,6 +192,8 @@ class ImageCL:
 
     outimgcl = ImageCL(self.clqueue, self.clprogram)
     outimgcl.fromArray(subarr, self.spacing)
+
+    #return outimgcl, X0, X1
     return outimgcl
 
   def toVTKImage(self):
@@ -209,8 +240,8 @@ class ImageCL:
     #minp = narray.min()
     #maxp = narray.max()
 
-    # NOTE: this may not work on Nvidia and Windows, due to space in header
-    # include location
+    # NOTE: this may not work on Nvidia and Windows, due to space character
+    # in header include location
     # WORKAROUND: edit Slicer/lib/Python/Lib/site-packages/pyopencl/reduction.py
     # and insert code from cl/pyopencl-complex.h manually
     clminp = cl.array.min(self.clarray, self.clqueue)
@@ -458,4 +489,3 @@ class ImageCL:
       outimages[2].clarray.data,
       clsize.data,
       clspacing.data).wait()
-
