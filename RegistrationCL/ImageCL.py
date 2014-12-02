@@ -18,8 +18,10 @@ import pyopencl.clmath as clmath
 
 import numpy as n
 
+import os
+
 class ImageCL:
-  def __init__(self, preferredDeviceType="CPU")
+  def __init__(self, preferredDeviceType="CPU"):
 
     self.preferredDeviceType = preferredDeviceType
 
@@ -134,7 +136,7 @@ class ImageCL:
 
     vtkimage = None
 
-  def fromArray(self, imarray, spacing):
+  def fromArray(self, imarray, spacing=[1,1,1]):
     """Fill data using a numpy array along with spacing information"""
 
     self.shape = imarray.shape
@@ -190,7 +192,7 @@ class ImageCL:
 
     #print "subarr shape", subarr.shape
 
-    outimgcl = ImageCL(self.clqueue, self.clprogram)
+    outimgcl = ImageCL(self.preferredDeviceType)
     outimgcl.fromArray(subarr, self.spacing)
 
     #return outimgcl, X0, X1

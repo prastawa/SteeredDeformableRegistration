@@ -1,5 +1,5 @@
 
-import ImageCl
+from ImageCL import ImageCL
 
 import numpy as np
 import vtk
@@ -12,6 +12,29 @@ class ImageQuery:
 
     self.panelSize = 128
 
+  def gaussian(self, shape):
+
+    # TODO: sigma
+    # TODO: consolidate with the one in polyaffine class?
+
+    sx = shape[0]
+    sy = shape[1]
+    sz = shape[2]
+
+    x0 = -sx / 2
+    x1 = x0 + sx
+    y0 = -sy / 2
+    y1 = y0 + sy
+    z0 = -sz / 2
+    z1 = z0 + sz
+
+    X, Y, Z = np.mgrid[x0:x1, y0:y1, z0:z1]
+    G = np.exp(-(X**2/np.float(sx) + Y**2/np.float(sy) + Z**2/np.float(sz)) )
+    #G /= G.sum()
+    G /= np.max(G)
+
+    return G
+
   def get_frame(self, image):
 
     minI = np.min(image)
@@ -20,7 +43,7 @@ class ImageQuery:
     if rangeI > 0.0:
       image = (image - minI) / rangeI
 
-    image = image * gaussian(image.shape)
+    #image = image * self.gaussian(image.shape)
 
     # TODO: gradient at scale?
     #Ix, Iy, Iz = np.gradient(image)
@@ -82,26 +105,60 @@ class ImageQuery:
     e = U[:,0]
     f = U[:,1]
 
+    # Match directions to image gradients
+    # Maximize \sum_x dot(e, grad_I(x))^2 + dot(f, grad_I(x))^2
+
     Ix, Iy, Iz = np.gradient(image)
 
-    for iter in range(20):
-      obj = np.sum( (e[0]*Ix) ** 2 + (e[1]*Iy) ** 2 + (e[2]*Iz) ** 2 +
-        (f[0]*Ix) ** 2 + (f[1]*Iy) ** 2 + (f[2]*Iz) ** 2 )
+    sum_Ix = np.sum(Ix)
+    sum_Iy = np.sum(Iy)
+    sum_Iz = np.sum(Iz)
 
+    obj_ref = np.sum( (e[0]*Ix + e[1]*Iy + e[2]*Iz) ** 2 +
+      (f[0]*Ix + f[1]*Iy + f[2]*Iz) ** 2 )
+
+    obj = obj_ref
+
+    for iter in range(20):
       print "View obj", obj
 
-      grad_e = np.array([np.sum(e[0]*Ix), np.sum(e[1]*Iy), np.sum(e[2]*Iz)]) * 2
-      grad_f = np.array([np.sum(f[0]*Ix), np.sum(f[1]*Iy), np.sum(f[2]*Iz)]) * 2
+      obj_prev = obj
+
+      dot_e = np.sum( e[0]*Ix + e[1]*Iy + e[2]*Iz )
+      grad_e = np.array(
+        [np.sum(dot_e*Ix), np.sum(dot_e*Iy), np.sum(dot_e*Iz)], np.single )
+
+      dot_f = np.sum( f[0]*Ix + f[1]*Iy + f[2]*Iz )
+      grad_f = np.array(
+        [np.sum(dot_f*Ix), np.sum(dot_f*Iy), np.sum(dot_f*Iz)], np.single )
 
       if iter == 0:
         stepE = 0.1 / np.max(np.abs(grad_e))
         stepF = 0.1 / np.max(np.abs(grad_f))
 
-      e = e + stepE * grad_e
-      f = f + stepF * grad_f
+      for lineIter in range(20):
+        e_test = e + stepE * grad_e
+        f_test = f + stepF * grad_f
 
-      e /= np.linalg.norm(e)
-      f /= np.linalg.norm(f)
+        e_test /= np.linalg.norm(e_test)
+        f_test /= np.linalg.norm(f_test)
+
+        obj_test = np.sum( (e_test[0]*Ix + e_test[1]*Iy + e_test[2]*Iz) ** 2 +
+          (f_test[0]*Ix + f_test[1]*Iy + f_test[2]*Iz) ** 2 )
+
+        if obj_test > obj:
+          obj = obj_test
+          e = e_test
+          f = f_test
+          stepE *= 1.2
+          stepF *= 1.2
+          break
+        else:
+          stepE *= 0.5
+          stepF *= 0.5
+
+      if abs(obj-obj_prev) < 1e-4 * abs(obj-obj_ref):
+        break
 
     U[:,0] = e
     U[:,1] = f
@@ -144,23 +201,23 @@ class ImageQuery:
     movingVTKImage = self.movingCL.toVTKImage()
 
     # Viewing parameters
-    fixedFrame = self.get_frame(self.fixedCL.get())
-    movingFrame = self.get_frame(self.movingCL.get())
+    fixedFrame = self.get_frame(self.fixedCL.clarray.get())
+    movingFrame = self.get_frame(self.movingCL.clarray.get())
 
     N = self.panelSize
 
     fixedShape = self.fixedCL.shape
 
-    C = [0, 0, 0]
+    XC = [0, 0, 0]
     for d in range(3):
-      C[d] = fixedShape[d] / 2.0
+      XC[d] = fixedShape[d] / 2.0
 
     #
     # Create panel of views for fixed and moving image, with likely optimal
     # orientations
     #
-    fixedArray = np.zeros((N*3, N*3), np.float32)
-    movingArray = np.zeros((N*3, N*3), np.float32)
+    fixedArray = np.zeros((N*3, N*3), np.single)
+    movingArray = np.zeros((N*3, N*3), np.single)
 
     for r in range(3):
       for c in range(3):
@@ -170,9 +227,9 @@ class ImageQuery:
         A[0:3,0] = V[:,0]
         A[0:3,1] = V[:,1]
         A[0:3,2] = V[:,2]
-        A[0,3] = C[0]
-        A[1,3] = C[1]
-        A[2,3] = C[2]
+        A[0,3] = XC[0]
+        A[1,3] = XC[1]
+        A[2,3] = XC[2]
         A[3,3] = 1.0
 
         resliceAxes = vtk.vtkMatrix4x4()
@@ -214,6 +271,15 @@ class ImageQuery:
     #
     # Display panel of views with blending slider
     #
+
+    def normalize(arr):
+      minv = arr.min()
+      maxv = arr.max()
+      rangev = maxv - minv
+      if rangev <= 0.0:
+        return arr
+      return (arr - minv) / rangev
+
     fixedArray = normalize(fixedArray)
     movingArray = normalize(movingArray)
 
@@ -228,24 +294,18 @@ class ImageQuery:
     iren = vtk.vtkRenderWindowInteractor()
     iren.SetRenderWindow(renWin)
 
-    sliderWidget = vtk.vtkSliderWidget()
-    sliderWidget.SetInteractor(iren)
-    sliderWidget.SetRepresentation(sliderRep)
-    sliderWidget.AddObserver("InteractionEvent", slider_callback)
-    sliderWidget.EnabledOn()
-
     dataImporter = vtk.vtkImageImport()
-    displayArray_vtkorder = np.asfortranarray(displayArray)
-    displayArray_vtkorder = displayArray.transpose()
-    ##dataImporter.CopyImportVoidPointer(displayArray_vtkorder, displayArray_vtkorder.nbytes)
-    #dataImporter.CopyImportVoidPointer(displayArray, displayArray.nbytes)
-    displayArray = np.uint8(displayArray * 255)
+    fixedArray_vtkorder = np.asfortranarray(fixedArray)
+    fixedArray_vtkorder = fixedArray.transpose()
+    ##dataImporter.CopyImportVoidPointer(fixedArray_vtkorder, fixedArray_vtkorder.nbytes)
+    #dataImporter.CopyImportVoidPointer(fixedArray, fixedArray.nbytes)
+    displayArray = np.uint8(fixedArray * 255)
     dataImporter.CopyImportVoidPointer(displayArray, displayArray.nbytes)
     #dataImporter.SetDataScalarTypeToFloat()
     dataImporter.SetDataScalarTypeToUnsignedChar()
     dataImporter.SetNumberOfScalarComponents(1)
-    dataImporter.SetDataExtent(0, panelSize*3-1, 0, panelSize*3-1, 0, 0)
-    dataImporter.SetWholeExtent(0, panelSize*3-1, 0, panelSize*3-1, 0, 0)
+    dataImporter.SetDataExtent(0, N*3-1, 0, N*3-1, 0, 0)
+    dataImporter.SetWholeExtent(0, N*3-1, 0, N*3-1, 0, 0)
     dataImporter.Update()
 
     imageActor = vtk.vtkImageActor()
@@ -259,6 +319,39 @@ class ImageQuery:
 
     ren.AddActor(imageActor)
 
+    def slider_callback(obj, event):
+      # Get slider value
+      alpha = obj.GetRepresentation().GetValue()
+
+      print "Slider value", alpha
+
+      displayArray = fixedArray * alpha + movingArray * (1.0 - alpha)
+
+      #minI = displayArray.min()
+      #maxI = displayArray.max()
+      #displayArray = (displayArray - minI) / (maxI - minI) * 255
+      #displayArray = np.uint8(displayArray)
+      #displayArray = np.uint8(normalize(displayArray) * 255)
+      displayArray = np.uint8(displayArray * 255)
+
+      dataImporter.CopyImportVoidPointer(displayArray, displayArray.nbytes)
+
+    sliderRep  = vtk.vtkSliderRepresentation2D()
+    sliderRep.SetMinimumValue(0.0)
+    sliderRep.SetMaximumValue(1.0)
+    sliderRep.SetValue(1.0)
+    #sliderRep.SetTitleText("Fixed vs moving")
+    sliderRep.GetPoint1Coordinate().SetCoordinateSystemToNormalizedDisplay()
+    sliderRep.GetPoint1Coordinate().SetValue(0.2, 0.1)
+    sliderRep.GetPoint2Coordinate().SetCoordinateSystemToNormalizedDisplay()
+    sliderRep.GetPoint2Coordinate().SetValue(0.8, 0.1)
+
+    sliderWidget = vtk.vtkSliderWidget()
+    sliderWidget.SetInteractor(iren)
+    sliderWidget.SetRepresentation(sliderRep)
+    sliderWidget.AddObserver("InteractionEvent", slider_callback)
+    sliderWidget.EnabledOn()
+
     #ren.InteractiveOff()
     renWin.AddRenderer(ren)
 
@@ -267,33 +360,27 @@ class ImageQuery:
     picker.PickFromListOn()
     picker.AddPickList(imageActor)
 
+    self.queryRowColumn = (0, 0)
+
     def pick_callback(obj, event):
-      global picker
       mousePos = obj.GetEventPosition()
-      print "Mouse", mousePos
+
       picker.PickProp(mousePos[0], mousePos[1], ren)
-      #picker.Pick(mousePos[0], mousePos[1], 0, ren)
-      #print "Path", picker.GetPath()
-      pickedActor = picker.GetActor()
-      print "picked actor type=", type(pickedActor)
-      #print "Image bounds", imageActor.GetPosition(), imageActor.GetPosition2()
-      print "Select", picker.GetSelectionPoint()
-      print "Pick", picker.GetPickPosition()
 
       p = picker.GetPickPosition()
-      c = round( (p[0]-100) / (3*panelSize) * 2 )
-      r = round( (p[1]-100) / (3*panelSize) * 2 )
+      c = round( (p[0]-100) / (3*N) * 2 )
+      r = round( (p[1]-100) / (3*N) * 2 )
 
       if r < 0 or r >= 3 or c < 0 or c >= 3:
         print "Outside"
-      else:
-        print "Image row", r, "col", c
+        return
+
+      print "Image row", r, "col", c
 
       self.queryRowColumn = (r, c)
 
-      iren.GetRenderWindow.Finalize()
+      iren.GetRenderWindow().Finalize()
       iren.TerminateApp()
-
 
     iren.SetPicker(picker)
     iren.AddObserver("LeftButtonPressEvent", pick_callback)
@@ -301,6 +388,10 @@ class ImageQuery:
     renWin.Render()
     iren.Start()
 
-
     # Return selection of a view in panel
-    return fixedSlice[], movingSlice, fixedFrame[:,r], movingFrame[:,c]
+    r, c = self.queryRowColumn
+
+    fixedSlice = fixedArray[r*N:(r+1)*N, c*N:(c+1)*N]
+    movingSlice = movingArray[r*N:(r+1)*N, c*N:(c+1)*N]
+
+    return fixedSlice, movingSlice, fixedFrame[:,r], movingFrame[:,c]

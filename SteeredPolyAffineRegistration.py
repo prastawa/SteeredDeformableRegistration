@@ -13,7 +13,7 @@ import numpy as n
 import pyopencl as cl
 import pyopencl.array as cla
 
-from RegistrationCL import ImageCL, DeformationCL
+from RegistrationCL import ImageCL, PolyAffineCL, SteeringRotation, SteeringScale
 
 # TODO add support for downsampling and upsampling?
 # TODO use image patch / compositing instead
