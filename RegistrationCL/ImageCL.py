@@ -21,25 +21,33 @@ import numpy as n
 import os
 
 class ImageCL:
-  def __init__(self, preferredDeviceType="CPU"):
 
-    self.preferredDeviceType = preferredDeviceType
+  clcontext_CPU = None
+  clqueue_CPU = None
+  clprogram_CPU = None
 
+  clcontext_GPU = None
+  clqueue_GPU = None
+  clprogram_GPU = None
+
+  @staticmethod
+  def setup_device(preferredDeviceType):
     # Create cl context and queue
-    self.clcontext = None
+    clcontext = None
     for platform in cl.get_platforms():
       for device in platform.get_devices():
         if cl.device_type.to_string(device.type) == preferredDeviceType:
-          self.clcontext = cl.Context([device])
-          print ("Using CL device: %s" % cl.device_type.to_string(device.type))
+          clcontext = cl.Context([device])
+          print ("Setting up CL device: %s" % cl.device_type.to_string(
+            device.type))
           break;
-    if self.clcontext is None:
-      self.clcontext = cl.create_some_context()
+    if clcontext is None:
+      clcontext = cl.create_some_context()
 
-    self.clqueue = cl.CommandQueue(self.clcontext)
+    clqueue = cl.CommandQueue(clcontext)
 
     # Print CL device info
-    device = self.clcontext.devices[0]
+    device = clcontext.devices[0]
     print("Device name:", device.name)
     print("Device type:", cl.device_type.to_string(device.type))
     print("Device memory: ", device.global_mem_size//1024//1024, 'MB')
@@ -55,7 +63,33 @@ class ImageCL:
     source = fp.read()
     fp.close()
 
-    self.clprogram = cl.Program(self.clcontext, source).build()
+    clprogram = cl.Program(clcontext, source).build()
+
+    return clcontext, clqueue, clprogram
+
+  @staticmethod
+  def setup():
+    if ImageCL.clcontext_CPU is None:
+      ImageCL.clcontext_CPU, ImageCL.clqueue_CPU, ImageCL.clprogram_CPU = \
+        ImageCL.setup_device("CPU")
+    if ImageCL.clcontext_GPU is None:
+      ImageCL.clcontext_GPU, ImageCL.clqueue_GPU, ImageCL.clprogram_GPU = \
+        ImageCL.setup_device("GPU")
+
+  def __init__(self, preferredDeviceType="CPU"):
+
+    ImageCL.setup()
+
+    self.preferredDeviceType = preferredDeviceType
+
+    if preferredDeviceType == "GPU":
+      self.clcontext = ImageCL.clcontext_GPU
+      self.clqueue = ImageCL.clqueue_GPU
+      self.clprogram = ImageCL.clprogram_GPU
+    else:
+      self.clcontext = ImageCL.clcontext_CPU
+      self.clqueue = ImageCL.clqueue_CPU
+      self.clprogram = ImageCL.clprogram_CPU
 
     self.origin = [0.0, 0.0, 0.0]
     self.shape = [0, 0, 0]
@@ -131,7 +165,7 @@ class ImageCL:
         #vtkimage.GetPointData().GetScalars()).reshape(self.shape)
     narray = n.asfortranarray(narray)
     narray = narray.transpose(2, 1, 0)
-    #narray = narray.astype('float32')
+    narray = narray.astype('float32')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
     vtkimage = None

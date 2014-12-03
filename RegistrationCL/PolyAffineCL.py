@@ -78,6 +78,12 @@ class PolyAffineCL:
 
     print "Created identity with", len(self.affines), "affine transforms"
 
+  def add_affine(self, A, T, C, r):
+    self.centers.append(C)
+    self.radii.append(r)
+    self.affines.append(A)
+    self.translations.append(T)
+
   def optimize(self, maxIters=10):
     """Optimize polyaffine parameters using adaptive step gradient descent"""
 
@@ -126,7 +132,7 @@ class PolyAffineCL:
         for q in range(numTransforms):
           TTestList[q] = TList[q] - dTList[q]*stepT
 
-        M = self.warp_moving(self.affines, TTestList, self.centers)
+        M = self.warp(self.origMovingCL, self.affines, TTestList, self.centers)
 
         DiffFM = self.fixedCL.subtract(M)
         DiffFMSq = DiffFM.multiply(DiffFM)
@@ -138,7 +144,7 @@ class PolyAffineCL:
           TList = TTestList
 
           # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp_moving should be aware of which to use
+          # gradient and warp should be aware of which to use
           self.translations = TList
 
           stepT *= 1.2
@@ -174,7 +180,7 @@ class PolyAffineCL:
         for q in range(numTransforms):
           ATestList[q] = AList[q] - dAList[q]*stepA
 
-        M = self.warp_moving(ATestList, self.translations, self.centers)
+        M = self.warp(self.origMovingCL, ATestList, self.translations, self.centers)
 
         DiffFM = self.fixedCL.subtract(M)
         DiffFMSq = DiffFM.multiply(DiffFM)
@@ -186,7 +192,7 @@ class PolyAffineCL:
           AList = ATestList
 
           # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp_moving should be aware of which to use
+          # gradient and warp should be aware of which to use
           self.affines = AList
 
           stepA *= 1.2
@@ -222,7 +228,7 @@ class PolyAffineCL:
         for q in range(numTransforms):
           CTestList[q] = CList[q] - dCList[q]*stepC
 
-        M = self.warp_moving(self.affines, self.translations, CTestList)
+        M = self.warp(self.origMovingCL, self.affines, self.translations, CTestList)
 
         DiffFM = self.fixedCL.subtract(M)
         DiffFMSq = DiffFM.multiply(DiffFM)
@@ -234,7 +240,7 @@ class PolyAffineCL:
           CList = CTestList
 
           # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp_moving should be aware of which to use
+          # gradient and warp should be aware of which to use
           self.centers = CTestList
 
           stepC *= 1.2
@@ -279,7 +285,7 @@ class PolyAffineCL:
 
     CoordCL = []
     for d in range(3):
-      cc = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+      cc = ImageCL(self.fixedCL.preferredDeviceType)
       cc.fromArray(Coord[d], self.fixedCL.spacing)
       CoordCL.append(cc)
     """
@@ -379,7 +385,7 @@ class PolyAffineCL:
 
     CoordCL = []
     for d in range(3):
-      cc = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+      cc = ImageCL(self.fixedCL.preferredDeviceType)
       cc.fromArray(Coord[d], self.fixedCL.spacing)
       CoordCL.append(cc)
     """
@@ -437,7 +443,7 @@ class PolyAffineCL:
 
     CoordCL = []
     for d in range(3):
-      cc = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+      cc = ImageCL(self.fixedCL.preferredDeviceType)
       cc.fromArray(Coord[d], self.fixedCL.spacing)
       CoordCL.append(cc)
     """
@@ -493,7 +499,7 @@ class PolyAffineCL:
 
     CoordCL = []
     for d in range(3):
-      cc = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+      cc = ImageCL(self.fixedCL.preferredDeviceType)
       cc.fromArray(Coord[d], self.fixedCL.spacing)
       CoordCL.append(cc)
     """
@@ -552,7 +558,13 @@ class PolyAffineCL:
 
     return gradC_list
 
-  def warp_moving(self, AList, TList, CList):
+  def apply(self, image):
+    """
+    Apply poly-affine transform to an image.
+    """
+    return self.warp(image, self.affines, self.translations, self.centers)
+
+  def warp(self, image, AList, TList, CList):
     """
     Compute deformation field and update moving image.
     Returns warped version of origMovingCL with current poly-affine parameters.
@@ -586,7 +598,7 @@ class PolyAffineCL:
 
     CoordCL = []
     for d in range(3):
-      cc = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+      cc = ImageCL(self.fixedCL.preferredDeviceType)
       cc.fromArray(Coord[d], self.fixedCL.spacing)
       CoordCL.append(cc)
     """
@@ -629,7 +641,7 @@ class PolyAffineCL:
     warpCL = DeformationCL(self.fixedCL)
     warpCL.set_mapping(CoordCL[0], CoordCL[1], CoordCL[2])
 
-    return warpCL.applyTo(self.origMovingCL)
+    return warpCL.applyTo(image)
 
   # TODO: switch to CL kernels that compute weights
   def _gaussian(self, shape, center, radii):
@@ -655,11 +667,11 @@ class PolyAffineCL:
     G /= numpy.max(G)
     #G /= numpy.sum(G)
 
-    gaussianCL = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+    gaussianCL = ImageCL(self.fixedCL.preferredDeviceType)
     gaussianCL.fromArray(G, self.fixedCL.spacing)
     """
 
-    temp = ImageCL(self.fixedCL.clqueue, self.fixedCL.clprogram)
+    temp = ImageCL(self.fixedCL.preferredDeviceType)
     temparr = numpy.zeros(shape, dtype=numpy.float32)
     temp.fromArray(temparr, self.fixedCL.spacing) 
 
