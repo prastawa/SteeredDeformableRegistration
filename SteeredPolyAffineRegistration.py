@@ -13,7 +13,8 @@ import numpy as n
 import pyopencl as cl
 import pyopencl.array as cla
 
-from RegistrationCL import ImageCL, PolyAffineCL, SteeringRotation, SteeringScale
+from RegistrationCL import ImageCL, DeformationCL, PolyAffineCL, \
+  SteeringRotation, SteeringScale
 
 # TODO add support for downsampling and upsampling?
 # TODO use image patch / compositing instead
@@ -41,10 +42,10 @@ class SteeredPolyAffineRegistration:
     parent.dependencies = []
     parent.contributors = ["Marcel Prastawa (GE), James Miller (GE), Steve Pieper (Isomics)"] # replace with "Firstname Lastname (Org)"
     parent.helpText = """
-    Steerable fluid registration example as a scripted loadable extension.
+    Steerable poly-affine registration example as a scripted loadable extension.
     """
     parent.acknowledgementText = """
-    Funded by NIH grant 3P41RR013218.
+    Funded by NIH grant P41RR013218 (NAC).
 """ # replace with organization, grant and thanks.
     self.parent = parent
 
@@ -223,48 +224,30 @@ class SteeredPolyAffineRegistrationWidget:
 
     # Interaction mode
     steerModeLayout = qt.QGridLayout()
-    self.scaleModeRadio = qt.QRadioButton("Scale")
     self.rotateModeRadio = qt.QRadioButton("Rotate")
-    self.shiftModeRadio = qt.QRadioButton("Shift")
-    steerModeLayout.addWidget(self.scaleModeRadio, 0, 0)
-    steerModeLayout.addWidget(self.rotateModeRadio, 0, 1)
-    steerModeLayout.addWidget(self.shiftModeRadio, 0, 2)
+    self.scaleModeRadio = qt.QRadioButton("Scale")
+    steerModeLayout.addWidget(self.rotateModeRadio, 0, 0)
+    steerModeLayout.addWidget(self.scaleModeRadio, 0, 1)
 
-    steerModeRadios = (self.scaleModeRadio, self.rotateModeRadio, self.shiftModeRadio)
+    steerModeRadios = (self.scaleModeRadio, self.rotateModeRadio)
     for r in steerModeRadios:
       r.connect('clicked(bool)', self.updateLogicFromGUI)
 
-    self.shiftModeRadio.checked = True
+    self.rotateModeRadio.checked = True
 
     uiOptFormLayout.addRow("Steering Mode: ", steerModeLayout)
 
-    # TODO:
-    # Grid for image display
-    # use QSpinBoxes like deformation grid
-    # Determines output volume size, so we can accomodate large images
-    # like 500x500x500, that needs CPU resampling at the end
-    # use this smaller image grid for steering, when started do
-    # downsampling with CPU, when stopped upsample to original grid with CPU
-    # TODO: needs ImageCL.copyToVolume(outputVolume)
+    # Number of polyaffine transforms at each dimension
+    self.numberAffinesSlider = ctk.ctkSliderWidget()
+    self.numberAffinesSlider.decimals = 0
+    self.numberAffinesSlider.singleStep = 1
+    self.numberAffinesSlider.minimum = 1
+    self.numberAffinesSlider.maximum = 100
+    self.numberAffinesSlider.toolTip = "Number of affines in each dim"
+    uiOptFormLayout.addRow("Number of affines per dim:", self.numberAffinesSlider)
 
-    display_spinBoxLayout = qt.QGridLayout()
-    self.displayGridSpinBoxes = [qt.QSpinBox(), qt.QSpinBox(), qt.QSpinBox()]
-    for dim in xrange(3):
-      self.displayGridSpinBoxes[dim].setRange(16, 256)
-      self.displayGridSpinBoxes[dim].setSingleStep(2)
-      self.displayGridSpinBoxes[dim].setValue(256)
-      display_spinBoxLayout.addWidget(self.displayGridSpinBoxes[dim], 0, dim)
+    self.numberAffinesSlider.value = self.logic.numberAffines
 
-    uiOptFormLayout.addRow("Display Grid: ", display_spinBoxLayout)
-
-    # Floating image opacity
-    self.opacitySlider = ctk.ctkSliderWidget()
-    self.opacitySlider.decimals = 2
-    self.opacitySlider.singleStep = 0.05
-    self.opacitySlider.minimum = 0.0
-    self.opacitySlider.maximum = 1.0
-    self.opacitySlider.toolTip = "Transparency of floating moving image"
-    uiOptFormLayout.addRow("Floating Image Opacity:", self.opacitySlider)
 
     # Draw iterations
     self.drawIterationSlider = ctk.ctkSliderWidget()
@@ -276,7 +259,6 @@ class SteeredPolyAffineRegistrationWidget:
     uiOptFormLayout.addRow("Redraw Iterations:", self.drawIterationSlider)
 
     self.drawIterationSlider.value = self.logic.drawIterations
-    self.opacitySlider.value = self.logic.opacity
 
     #
     # Registration regOptions collapsible button
@@ -288,31 +270,19 @@ class SteeredPolyAffineRegistrationWidget:
     # Layout within the parameter collapsible button
     regOptFormLayout = qt.QFormLayout(regOptCollapsibleButton)
 
-    # TODO: button for adding transform at current slice positions
+    # TODO: button for adding transform at current slice positions?
 
-    # Polyaffine width for new transforms
-    self.polyAffineKernelWidth = ctk.ctkSliderWidget()
-    self.polyAffineKernelWidth.decimals = 1
-    self.polyAffineKernelWidth.singleStep = 0.5
-    self.polyAffineKernelWidth.minimum = 0.5
-    self.polyAffineKernelWidth.maximum = 50.0
-    self.polyAffineKernelWidth.toolTip = "Area of effect for new transform."
-    regOptFormLayout.addRow("Deformation Stiffness: ", self.polyAffineKernelWidth)
+    self.polyAffineRadius = ctk.ctkSliderWidget()
+    self.polyAffineRadius.decimals = 1
+    self.polyAffineRadius.singleStep = 0.5
+    self.polyAffineRadius.minimum = 1.0
+    self.polyAffineRadius.maximum = 100.0
+    self.polyAffineRadius.toolTip = "Area of effect for new transform."
+    regOptFormLayout.addRow("Polyaffine radius: ", self.polyAffineRadius)
 
-    self.fluidKernelWidth.value = self.logic.fluidKernelWidth
+    self.polyAffineRadius.value = self.logic.polyAffineRadius
 
-    self.userInputWeight = ctk.ctkSliderWidget()
-    self.userInputWeight.decimals = 1
-    self.userInputWeight.singleStep = 0.1
-    self.userInputWeight.minimum = 0.0
-    self.userInputWeight.maximum = 100.0
-    self.userInputWeight.toolTip = "Weight for user input."
-    regOptFormLayout.addRow("User Steer Weight: ", self.userInputWeight)
-
-    self.userInputWeight.value = self.logic.userInputWeight
-
-    sliders = (self.drawIterationSlider, self.fluidKernelWidth,
-      self.opacitySlider, self.userInputWeight)
+    sliders = (self.drawIterationSlider, self.polyAffineRadius)
     for slider in sliders:
       slider.connect('valueChanged(double)', self.updateLogicFromGUI)
 
@@ -387,19 +357,16 @@ class SteeredPolyAffineRegistrationWidget:
     # if(self.logic.transform is not None):
     #   self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
     
+    self.logic.numberAffines = self.numberAfffinesSlider.value
     self.logic.drawIterations = self.drawIterationSlider.value
-    self.logic.polyAffineKernelWidth = self.polyAffineKernelWidth.value
-    self.logic.userInputWeight = self.userInputWeight.value
-    self.logic.opacity = self.opacitySlider.value
+    self.logic.polyAffineRadius = self.polyAffineRadius.value
 
     self.logic.debugMessages = self.debugButton.checked
 
-    if self.pullModeRadio.checked:
-      self.logic.steerMode = "pull"
-    if self.expandModeRadio.checked:
-      self.logic.steerMode = "expand"
-    if self.shrinkModeRadio.checked:
-      self.logic.steerMode = "shrink"
+    if self.rotateModeRadio.checked:
+      self.logic.steerMode = "rotate"
+    if self.scaleModeRadio.checked:
+      self.logic.steerMode = "scale"
 
     # TODO: signal logic that objective function may have changed
     # trigger appropriate behaviors (ex. delta adjust)
@@ -450,22 +417,7 @@ class SteeredPolyAffineRegistrationWidget:
       #sp = movingVolume.GetImageData().GetSpacing()
       #print "Call build id with orig = " + str(orig) + " sp = " + str(sp)
       
-      # vl = slicer.modules.volumes.logic()
-      # self.gridVolume = vl.CloneVolume(slicer.mrmlScene, movingVolume, "warped-grid")
-      # self.gridVolume = slicer.vtkMRMLScalarVolumeNode()
-      # self.gridVolume.CopyWithScene(movingVolume)
-      # self.gridVolume.SetAndObserveStorageNodeID(None)
-      # self.gridVolume.Modified()
-      # self.gridVolume.LabelMapOn()
-      # # self.gridVolume.SetAndObserveColorNodeID("vtkMRMLColorTableNodeLabels")
-      # self.gridVolume.SetName("warped-grid")
-      
-      # print "Grid volume id = " + str(self.gridVolume.GetID())
   
-      # gridImage = self.buildGrid(movingVolume.GetImageData())
-      # #self.gridVolume.GetImageData().GetPointData().SetScalars( gridImage.GetPointData().GetScalars() )
-      # self.gridVolume.SetAndObserveImageData(gridImage)
-
       self.logic.interaction = True
       self.logic.automaticRegistration = True
 
@@ -497,39 +449,6 @@ class SteeredPolyAffineRegistrationWidget:
         ps = pstats.Stats(self.profiler, stream=s).sort_stats(sortby)
         ps.print_stats()
         print s.getvalue()
-     
-  def buildGrid(self, inputImage):
-    castf = vtk.vtkImageCast()
-    castf.SetOutputScalarTypeToShort()
-    castf.SetInput(inputImage)
-    castf.Update()
-
-    #gridImage = castf.GetOutput()
-    gridImage = vtk.vtkImageData()
-    gridImage.DeepCopy(castf.GetOutput())
-    gridImage.GetPointData().GetScalars().FillComponent(0, 0)
-    
-    size = gridImage.GetDimensions()
-    
-    for i in xrange(size[0]):
-      for j in xrange(size[1]):
-        for k in xrange(size[2]):
-          if i > 0 and (i % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-
-    for j in xrange(size[1]):
-      for i in xrange(size[0]):
-        for k in xrange(size[2]):
-          if j > 0 and (j % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-            
-    for k in xrange(size[2]):
-      for i in xrange(size[0]):
-        for j in xrange(size[1]):
-          if k > 0 and (k % 20) < 3:
-            gridImage.SetScalarComponentFromDouble(i, j, k, 0, 1.0)
-            
-    return gridImage
     
   
   #########################################################################
@@ -585,10 +504,9 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.timer = None
 
     # parameter defaults
+    self.numberAffines = 4
     self.drawIterations = 2
-    self.fluidKernelWidth = 15.0
-    self.userInputWeight = 1.0
-    self.opacity = 0.5
+    self.polyAffineRadius = 10.0
 
     # TODO
     #self.transform = ?
@@ -597,7 +515,7 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.iteration = 0
     self.interaction = False
 
-    self.steerMode = "Shift"
+    self.steerMode = "rotate"
 
     self.position = []
     self.paintCoordinates = []
@@ -605,14 +523,15 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.lastEventPosition = [0.0, 0.0, 0.0]
     self.startEventPosition = [0.0, 0.0, 0.0]
     
-    # Queue containing info on arrow draw events, tuples of (Mtime, xy0, RAS0, xy1, RAS1, sliceWidget)
-    self.arrowQueue = Queue.Queue()
+    # Queue containing info on line draw events, tuples of
+    # (Mtime, xy0, RAS0, xy1, RAS1, sliceWidget)
+    self.lineQueue = Queue.Queue()
 
-    self.arrowStartXY = (0, 0, 0)
-    self.arrowEndXY = (0, 0, 0)
+    self.lineStartXY = (0, 0, 0)
+    self.lineEndXY = (0, 0, 0)
     
-    self.arrowStartRAS = [0.0, 0.0, 0.0]
-    self.arrowEndRAS = [0.0, 0.0, 0.0]
+    self.lineStartRAS = [0.0, 0.0, 0.0]
+    self.lineEndRAS = [0.0, 0.0, 0.0]
 
     print("Reload")
 
@@ -628,26 +547,19 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.lastDrawMTime = 0
     self.lastDrawSliceWidget = None
 
-    self.expandShrinkVectors = []
-    
-    self.arrowsActor = vtk.vtkActor()
-    self.arrowsMapper = vtk.vtkPolyDataMapper()
-    self.arrowsGlyph = vtk.vtkGlyph3D()
+    self.linesActor = vtk.vtkActor()
+    self.linesMapper = vtk.vtkPolyDataMapper()
+    self.linesGlyph = vtk.vtkGlyph3D()
 
     self.movingArrowActor = vtk.vtkActor()
     self.movingArrowMapper = vtk.vtkPolyDataMapper()
     self.movingArrowGlyph = vtk.vtkGlyph3D()
 
-    self.arrowsActor.GetProperty().SetOpacity(0.5)
-    self.arrowsActor.GetProperty().SetColor([0.1, 0.8, 0.1])
+    self.linesActor.GetProperty().SetOpacity(0.5)
+    self.linesActor.GetProperty().SetColor([0.1, 0.8, 0.1])
 
     self.movingArrowActor.GetProperty().SetOpacity(0.5)
     self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
-
-    self.movingContourActor = vtk.vtkActor2D()
-    #self.movingContourActor = vtk.vtkImageActor()
-    
-    self.lastHoveredGradMag = 0
 
     self.preferredDeviceType = "GPU"
     
@@ -666,7 +578,7 @@ class SteeredPolyAffineRegistrationLogic(object):
         renwin = sliceWidget.sliceView().renderWindow()
         rencol = renwin.GetRenderers()
         if rencol.GetNumberOfItems() == 2:
-          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
+          rencol.GetItemAsObject(1).RemoveActor(self.linesActor)
 
   def reorientVolumeToAxial(self, volume):
     nodeName = slicer.mrmlScene.GetUniqueNameByString(volume.GetName())
@@ -700,20 +612,6 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.fixedImageCL = ImageCL(self.preferredDeviceType)
     self.fixedImageCL.fromVolume(axialVolume)
     self.fixedImageCL.normalize()
-
-    fixedShape_down = list(self.fixedImageCL.shape)
-    for dim in xrange(3):
-      #fixedShape_down[dim] = fixedShape_down[dim] / 2
-      fixedShape_down[dim] = \
-        min(fixedShape_down[dim], widget.warpGridSpinBoxes[dim].value)
-    self.fixedImageCL_down = self.fixedImageCL.resample(fixedShape_down)
-
-    self.ratios_down = [1.0, 1.0, 1.0]
-    for dim in xrange(3):
-      self.ratios_down[dim] = self.fixedImageCL.spacing[dim] / self.fixedImageCL_down.spacing[dim]
-
-    if self.debugMessages:
-      print "Using deformation grid " + str(fixedShape_down)
 
   def useMovingVolume(self, volume):
 
@@ -768,6 +666,8 @@ class SteeredPolyAffineRegistrationLogic(object):
     """
 
     vtkimage = imgcl.toVTKImage()
+
+    #TODO sync origin
   
     #castf = vtk.vtkImageCast()
     #castf.SetOutputScalarTypeToFloat()
@@ -833,22 +733,6 @@ class SteeredPolyAffineRegistrationLogic(object):
       compositeNode.SetForegroundOpacity(1.0)
       compositeNode.LinkedControlOn()
 
-    #ii = 0
-    #for compositeNode in compositeNodes.values():
-    #  print "Composite node " + compositeNode.GetName()
-    #  #compositeNode.SetLabelVolumeID(self.gridVolume.GetID())
-    #  compositeNode.SetBackgroundVolumeID(fixedVolume.GetID())
-    #  compositeNode.SetForegroundVolumeID(outputVolume.GetID())
-    #  
-    #  compositeNode.SetForegroundOpacity(0.5)
-    #  if ii == 1:
-    #    compositeNode.SetForegroundOpacity(0.0)
-    #  if ii == 0:
-    #    compositeNode.SetForegroundOpacity(1.0)
-    #  compositeNode.SetLabelOpacity(0.5)
-    #  
-    #  ii += 1
-
     #compositeNodes.values()[0].LinkedControlOn()
     yellowWidget = layoutManager.sliceWidget('Yellow')
       
@@ -861,30 +745,14 @@ class SteeredPolyAffineRegistrationLogic(object):
     applicationLogic = slicer.app.applicationLogic()
     applicationLogic.FitSliceToAll()
     
-    self.outputImageCL_down = self.outputImageCL.resample(
-      self.fixedImageCL_down.shape)
-
     # TODO: initialize poly affine
     # One big affine?
     # Eight affine blocks?
 
-    self.identityPolyAffine = PolyAffineCL(self.fixedImageCL)
+    self.polyAffine = PolyAffineCL(self.fixedImageCL, self.movingImageCL)
+    self.polyAffine.create_identity(self.numberAffines)
+    self.polyAffine.setup_optimizer()
 
-    self.identityCL_down = DeformationCL(self.fixedImageCL_down)
-    self.deformationCL_down = self.identityCL_down
-
-
-    # TODO: initialize poly affine
-    # One big affine?
-    # Eight affine blocks?
-# TODO:
-# resample output volume to display grid using CPU
-# set identityCL and deformationCL to be this size
-    self.identityCL = DeformationCL(self.outputImageCL)
-    self.deformationCL = self.identityCL
-    
-    self.fluidDelta = 0.0
-    
     self.registrationIterationNumber = 0;
     qt.QTimer.singleShot(self.interval, self.updateStep)       
           
@@ -900,28 +768,18 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registration iteration %d' %(self.registrationIterationNumber))
 
-    isArrowUsed = False
+    isLineUsed = False
+
+    self.polyAffineCL.step()
     
-    [gradientsCL, momentasCL] = self.computeImageForces()
+    if not self.lineQueue.empty():
+      self.invoke_correction()
+      isLineUsed = True
 
-    if not self.arrowQueue.empty():
-      self.addUserControl(gradientsCL, momentasCL)
-      isArrowUsed = True
-
-    gradientsCL = None
-
-    self.updateDeformation(momentasCL, isArrowUsed)
-
-    momentasCL = None
-   
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
-      self.deformationCL = self.deformationCL_down.compose(self.identityCL)
-      #self.deformationCL = self.deformationCL_down.resample(
-      #  self.fixedImageCL.shape)
-      self.outputImageCL = self.deformationCL.applyTo(self.movingImageCL)
-
-      #TODO: deformationCL and outputImageCL need to be in display grid
+      #self.outputImageCL = self.polyAffineCL.applyTo(self.origMovingImageCL)
+      self.outputImageCL = self.polyAffineCL.movingImageCL
 
       self.updateOutputVolume(self.outputImageCL)
       self.redrawSlices()
@@ -929,30 +787,12 @@ class SteeredPolyAffineRegistrationLogic(object):
     # Initiate another iteration of the registration algorithm.
     if self.interaction:
       qt.QTimer.singleShot(self.interval, self.updateStep)
-      
-  def computeImageForces(self):
+
+  def invoke_correction(self):
     
-    # Gradient descent: grad of output image * (fixed - output)
-    diffImageCL_down = self.fixedImageCL_down.subtract(self.outputImageCL_down)
-
-    gradientsCL_down = self.outputImageCL_down.gradient()
-
-    momentasCL_down = [None, None, None]
-    for dim in xrange(3):
-      momentasCL_down[dim] = gradientsCL_down[dim].multiply(diffImageCL_down)
-
-    return [gradientsCL_down, momentasCL_down]
-
-  def addUserControl(self, gradientsCL_down, momentasCL_down):
-    
-    # Add user inputs to momentum vectors
-    # User defined impulses are in arrow queue containing xy, RAS, slice widget
-#TODO convert arrow queue to cl matrix
-# write GPU kernel to insert them into mom images
-# need rastoijk matrix
-
-    # TODO use axial reoriented fixed volume, skip using RAS matrix?
     widget= slicer.modules.SteeredPolyAffineRegistrationWidget
+
+    # Determine region center and radius
               
     #fixedVolume = widget.fixedSelector.currentNode()
     #movingVolume = widget.movingSelector.currentNode()
@@ -961,177 +801,12 @@ class SteeredPolyAffineRegistrationLogic(object):
 
     imageSize = fixedVolume.GetImageData().GetDimensions()
 
-    shape = momentasCL_down[0].shape
-    spacing = momentasCL_down[0].spacing
+    shape = self.fixedImageCL.shape
+    spacing = self.fixedImageCL.spacing
 
     origin = movingVolume.GetOrigin()
 
-    # Only do 10 arrows per iteration, TODO: allow user adjustment
-    numArrowsToProcess = min(self.arrowQueue.qsize(), 10)
-
-    # for mapping drawn force to image grid
-    # TODO use reoriented volume with identity matrix?, skip using RAS matrix?
-    # issue with VTK negative coord in x,y ?
-    movingRAStoIJK = vtk.vtkMatrix4x4()
-    movingVolume.GetRASToIJKMatrix(movingRAStoIJK)
-
-    if self.debugMessages:
-      print "Folding in %d arrows" % numArrowsToProcess
-      print "movingRAStoIJK = " + str(movingRAStoIJK)
-
-    forceX = n.zeros((numArrowsToProcess, 3), n.float32)
-    forceV = n.zeros((numArrowsToProcess, 3), n.float32)
-
-    # Splat size depends on amount of motion defined by user
-    sigmaM = n.zeros((numArrowsToProcess, 1), n.float32)
-    
-    for count in xrange(numArrowsToProcess):
-      arrowTuple = self.arrowQueue.get()
-      
-      #print "arrowTuple = " + str(arrowTuple)
-      
-      Mtime = arrowTuple[0]
-      sliceWidget = arrowTuple[1]
-      startXY = arrowTuple[2]
-      endXY = arrowTuple[3]
-      startRAS = arrowTuple[4]
-      endRAS = arrowTuple[5]
-
-      #TODO add arrow display to proper widget/view (in ???)
-    
-      #startXYZ = sliceWidget.sliceView().convertDeviceToXYZ(startXY)
-      #startRAS = sliceWidget.sliceView().convertXYZToRAS(startXYZ)
-    
-      #endXYZ = sliceWidget.sliceView().convertDeviceToXYZ(endXY)
-      #endRAS = sliceWidget.sliceView().convertXYZToRAS(endXYZ)
-  
-      startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
-      endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
-      #startIJK = startRAS
-      #endIJK = endRAS
-
-      # NOTE: CL array index is reverse of VTK image index
-      startIJK = list(startIJK)
-      endIJK = list(endIJK)
-
-      # TODO: DEBUG: need it in VTK order?
-      #startIJK.reverse()
-      #endIJK.reverse()
-
-      # Scale according to downsampling ratio
-      for dim in xrange(3):
-        startIJK[dim] *= self.ratios_down[dim]
-        endIJK[dim] *= self.ratios_down[dim]
-
-      # TODO: use RAS (with origin and orient)
-
-      sigma = 0.0
-      forceMag = 0.0
-      for dim in xrange(3):
-        if self.steerMode == "pull":
-          d = (endIJK[dim] - startIJK[dim]) * spacing[dim]
-          forceX[count, dim] = startIJK[dim] * spacing[dim]
-        if self.steerMode == "expand":
-          d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
-          forceX[count, dim] = endIJK[dim] * spacing[dim]
-        if self.steerMode == "shrink":
-          d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
-          forceX[count, dim] = startIJK[dim] * spacing[dim]
-
-        #d = (startIJK[dim] - endIJK[dim]) * spacing[dim]
-        #d = (endIJK[dim] - startIJK[dim]) * spacing[dim]
-        #forceX[count, dim] = startIJK[dim] * spacing[dim]
-
-        forceV[count, dim] = d * self.userInputWeight
-
-        sigma += d*d
-        forceMag += forceV[count, dim] ** 2
-
-      sigmaM[count, 0] = sigma
-
-      forceMag = math.sqrt(forceMag)
-
-      # Find vector along grad at start position that projects to the force
-      # vector described on the plane
-      if self.steerMode == "pull":
-
-        for dim in xrange(3):
-          startIJK[dim] = int( round(startIJK[dim]) )
-          endIJK[dim] = int( round(endIJK[dim]) )
-
-          if startIJK[dim] < 0:
-            startIJK[dim] = 0
-          if startIJK[dim] >= shape[dim]:
-            startIJK[dim] = shape[dim]-1
-
-        gvec = [0.0, 0.0, 0.0]
-
-        gmag = 0.0
-        for dim in xrange(3):
-          grad_array = gradientsCL_down[dim].clarray
-          g = grad_array[ startIJK[0], startIJK[1], startIJK[2] ]
-          gvec[dim] = g.get()[()] # Convert to scalar
-          gmag += gvec[dim] ** 2
-        gmag = math.sqrt(gmag)
-        if gmag == 0.0:
-          continue
-          
-        gdotf = 0
-        for dim in xrange(3):
-          gvec[dim] = gvec[dim] / gmag
-          gdotf += gvec[dim] * forceV[count, dim]
-        if gdotf == 0.0:
-          continue
-
-        for dim in xrange(3):
-          forceV[count, dim] = gvec[dim] * forceMag**2.0 / gdotf
-
-    ImageCL.add_splat3(momentasCL_down, forceX, forceV, sigmaM)
-              
-
-  def updateDeformation(self, momentasCL_down, isArrowUsed):
-
-    velocitiesCL_down = [None, None, None]
-    for dim in xrange(3):
-      velocitiesCL_down[dim] = \
-        momentasCL_down[dim].recursive_gaussian(self.fluidKernelWidth)
-      
-    # Compute max velocity
-    velocMagCL = velocitiesCL_down[0].multiply(velocitiesCL_down[0])
-    for dim in xrange(1,3):
-      velocMagCL.add_inplace(
-        velocitiesCL_down[dim].multiply(velocitiesCL_down[dim]) )
-      
-    maxVeloc = velocMagCL.max()
-
-    if self.debugMessages:
-      print "maxVeloc = %f" % maxVeloc
-    
-    if maxVeloc <= 0.0:
-      return
-      
-    maxVeloc = math.sqrt(maxVeloc)
-
-    #if self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
-    if isArrowUsed or self.fluidDelta == 0.0 or (self.fluidDelta*maxVeloc) > 2.0:
-      self.fluidDelta = 2.0 / maxVeloc
-
-    for dim in xrange(3):
-      velocitiesCL_down[dim].scale(self.fluidDelta)
-
-    # Reset delta for next iteration if we used a user-defined impulse
-    # TODO: control
-    if isArrowUsed:
-      self.fluidDelta = 0.0
-
-    smallDeformationCL_down = self.identityCL_down.clone()
-    smallDeformationCL_down.add_velocity(velocitiesCL_down)
-
-    self.deformationCL_down = self.deformationCL_down.compose(
-      smallDeformationCL_down)
-
-    self.outputImageCL_down = self.deformationCL_down.applyTo(
-      self.movingImageCL)
+    # TODO
 
   def processEvent(self,observee,event=None):
 
@@ -1192,63 +867,8 @@ class SteeredPolyAffineRegistrationLogic(object):
         
           self.actionState = "pullStart"
         
-          self.arrowStartXY = xy
-          self.arrowStartRAS = ras
-
-          # Create a patch containing moving image information
-          contourimg = vtk.vtkImageData()
-          contourimg.SetDimensions(50,50,1) # TODO automatically determine from window sizes
-          contourimg.SetSpacing(1.0 / windowW, 1.0 / windowW, 1.0)
-          #contourimg.SetSpacing(1.0 / (100*windowW), 1.0 / (100*windowW), 1.0)
-          contourimg.SetNumberOfScalarComponents(4)
-          contourimg.SetScalarTypeToFloat()
-          contourimg.AllocateScalars()
-
-          contourimg.GetPointData().GetScalars().FillComponent(1, 0.0)
-          contourimg.GetPointData().GetScalars().FillComponent(2, 0.0)
-          #contourimg.GetPointData().GetScalars().FillComponent(3, 0.5)
-          contourimg.GetPointData().GetScalars().FillComponent(3, self.opacity)
-
-          w = slicer.modules.SteeredPolyAffineRegistrationWidget
-          
-          movingRAStoIJK = vtk.vtkMatrix4x4()
-          w.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
-
-          outputImage = w.outputSelector.currentNode().GetImageData()
-
-          for xshift in xrange(50):
-            for yshift in xrange(50):
-              xy_p = (round(xy[0] +  xshift-25), round(xy[1] + yshift-25))
-              xyz_p = sliceWidget.sliceView().convertDeviceToXYZ(xy_p)
-              ras_p = sliceWidget.sliceView().convertXYZToRAS(xyz_p)
-          
-              ijk_p = movingRAStoIJK.MultiplyPoint(ras_p + (1,))
-
-              #TODO verify coord is inside buffer
-              g = outputImage.GetScalarComponentAsDouble(round(ijk_p[0]), round(ijk_p[1]), round(ijk_p[2]), 0)
-              contourimg.SetScalarComponentFromDouble(xshift, yshift, 0, 0, g)
-
-          imagemapper = vtk.vtkImageMapper()
-          imagemapper.SetInput(contourimg)
-          imagemapper.SetColorLevel(0.5)
-          imagemapper.SetColorWindow(0.5)
-
-          self.movingContourActor.SetMapper(imagemapper)
-          self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
-
-          #self.movingContourActor.SetInput(contourimg)
-          #self.movingContourActor.SetOpacity(0.5)
-          #self.movingContourActor.GetProperty().SetOpacity(0.5)
-
-          if self.debugMessages:
-            print "Init contour pos = " + str(self.movingContourActor.GetPosition())
-
-          # Add image to slice view in row above
-          otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
-          otherSliceWidget = layoutManager.sliceWidget(otherSliceNode.GetLayoutName())
-          otherSliceView = otherSliceWidget.sliceView()
-          otherSliceStyle = otherSliceWidget.interactorStyle()
-          otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor2D(self.movingContourActor)
+          self.lineStartXY = xy
+          self.lineStartRAS = ras
 
         elif self.steerMode == "expand" and nodeIndex > 2:
 
@@ -1265,8 +885,8 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           self.expandStartTime = time.clock()
         
-          self.arrowStartXY = xy
-          self.arrowStartRAS = ras
+          self.lineStartXY = xy
+          self.lineStartRAS = ras
 
         elif self.steerMode == "shrink" and nodeIndex > 2:
 
@@ -1281,8 +901,8 @@ class SteeredPolyAffineRegistrationLogic(object):
         
           self.actionState = "shrinkStart"
 
-          self.arrowStartXY = xy
-          self.arrowStartRAS = ras
+          self.lineStartXY = xy
+          self.lineStartRAS = ras
       
         else:
           self.actionState = "clickReject"
@@ -1301,37 +921,31 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           self.lastEventPosition = ras
 
-          self.arrowEndXY = xy
-          self.arrowEndRAS = ras
+          self.lineEndXY = xy
+          self.lineEndRAS = ras
 
-          # TODO: only draw arrow within ??? seconds
+          # TODO: only draw line within ??? seconds
           self.lastDrawMTime = sliceNode.GetMTime()
           
           self.lastDrawSliceWidget = sliceWidget
 
-          self.arrowQueue.put(
-            (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, self.arrowEndXY, self.arrowStartRAS, self.arrowEndRAS) )
+          self.lineQueue.put(
+            (sliceNode.GetMTime(), sliceWidget, self.lineStartXY, self.lineEndXY, self.lineStartRAS, self.lineEndRAS) )
 
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
           renOverlay.RemoveActor(self.movingArrowActor)
 
-          otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
-          otherSliceWidget = layoutManager.sliceWidget(otherSliceNode.GetLayoutName())
-          otherSliceView = otherSliceWidget.sliceView()
-          otherSliceStyle = otherSliceWidget.interactorStyle()
-          otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().RemoveActor2D(self.movingContourActor)
-
         if self.actionState == "expandStart":
           cursor = qt.QCursor(qt.Qt.OpenHandCursor)
           app.setOverrideCursor(cursor)
 
-          # TODO: only draw arrow within ??? seconds
+          # TODO: only draw line within ??? seconds
           self.lastDrawMTime = sliceNode.GetMTime()
           
           self.lastDrawSliceWidget = sliceWidget
 
-          a = self.arrowStartXY
+          a = self.lineStartXY
           for i in xrange(len(self.expandShrinkVectors)):
             v = self.expandShrinkVectors[i]
             xy = (a[0]+v[0], a[1]+v[1], 0.0)
@@ -1339,11 +953,11 @@ class SteeredPolyAffineRegistrationLogic(object):
             xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
             ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
 
-            arrowEndXY = xy
-            arrowEndRAS = ras
+            lineEndXY = xy
+            lineEndRAS = ras
 
-            self.arrowQueue.put(
-              (sliceNode.GetMTime(), sliceWidget, self.arrowStartXY, arrowEndXY, self.arrowStartRAS, arrowEndRAS) )
+            self.lineQueue.put(
+              (sliceNode.GetMTime(), sliceWidget, self.lineStartXY, lineEndXY, self.lineStartRAS, lineEndRAS) )
 
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
@@ -1353,12 +967,12 @@ class SteeredPolyAffineRegistrationLogic(object):
           cursor = qt.QCursor(qt.Qt.OpenHandCursor)
           app.setOverrideCursor(cursor)
 
-          # TODO: only draw arrow within ??? seconds
+          # TODO: only draw line within ??? seconds
           self.lastDrawMTime = sliceNode.GetMTime()
           
           self.lastDrawSliceWidget = sliceWidget
 
-          a = self.arrowStartXY
+          a = self.lineStartXY
           for i in xrange(len(self.expandShrinkVectors)):
             v = self.expandShrinkVectors[i]
             xy = (a[0]+v[0], a[1]+v[1], 0.0)
@@ -1366,11 +980,11 @@ class SteeredPolyAffineRegistrationLogic(object):
             xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
             ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
 
-            arrowEndXY = xy
-            arrowEndRAS = ras
+            lineEndXY = xy
+            lineEndRAS = ras
 
-            self.arrowQueue.put(
-              (sliceNode.GetMTime(), sliceWidget, arrowEndXY, self.arrowStartXY, arrowEndRAS, self.arrowStartRAS) )
+            self.lineQueue.put(
+              (sliceNode.GetMTime(), sliceWidget, lineEndXY, self.lineStartXY, lineEndRAS, self.lineStartRAS) )
 
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
@@ -1408,7 +1022,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
         elif self.actionState == "pullStart":
 
-          # Drawing an arrow that pulls/drags voxels
+          # Drawing an line that pulls/drags voxels
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1417,13 +1031,13 @@ class SteeredPolyAffineRegistrationLogic(object):
           coord = vtk.vtkCoordinate()
           coord.SetCoordinateSystemToDisplay()
 
-          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
           worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           coord.SetValue(xy[0], xy[1], 0.0)
           worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
-          # TODO refactor code, one method for drawing collection of arrows, one actor for all arrows (moving + static ones)?
+          # TODO refactor code, one method for drawing collection of lines, one actor for all lines (moving + static ones)?
 
           pts = vtk.vtkPoints()
           pts.InsertNextPoint(worldStartXY)
@@ -1437,10 +1051,10 @@ class SteeredPolyAffineRegistrationLogic(object):
           pd.SetPoints(pts)
           pd.GetPointData().SetVectors(vectors)
 
-          arrowSource = vtk.vtkArrowSource()
+          lineSource = vtk.vtkArrowSource()
 
           self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
           self.movingArrowGlyph.ScalingOn()
           self.movingArrowGlyph.OrientOn()
           self.movingArrowGlyph.SetScaleFactor(1.0)
@@ -1456,12 +1070,9 @@ class SteeredPolyAffineRegistrationLogic(object):
             style.GetInteractor().GetRenderWindow() )
           renOverlay.AddActor(self.movingArrowActor)
 
-          #self.movingContourActor.SetPosition(worldXY)
-          self.movingContourActor.SetPosition(xy[0]-25, xy[1]-25)
-
         elif self.actionState == "expandStart":
 
-          # Drawing arrows for local expansion
+          # Drawing lines for local expansion
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1470,19 +1081,19 @@ class SteeredPolyAffineRegistrationLogic(object):
           coord = vtk.vtkCoordinate()
           coord.SetCoordinateSystemToDisplay()
 
-          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
           worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           coord.SetValue(xy[0], xy[1], 0.0)
           worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           # TODO: click and hold mode? requires a timer for detection
-          #arrowSize = (time.clock() - self.expandStartTime) * 0.1
-          arrowSize = 0.0
+          #lineSize = (time.clock() - self.expandStartTime) * 0.1
+          lineSize = 0.0
           for dim in xrange(2):
-            arrowSize += (xy[dim] - self.arrowStartXY[dim]) ** 2.0
-          arrowSize = math.sqrt(arrowSize)
-          dArrowSize = 0.7 * arrowSize
+            lineSize += (xy[dim] - self.lineStartXY[dim]) ** 2.0
+          lineSize = math.sqrt(lineSize)
+          dArrowSize = 0.7 * lineSize
 
           worldArrowSize = 0.0
           for dim in xrange(3):
@@ -1495,10 +1106,10 @@ class SteeredPolyAffineRegistrationLogic(object):
             pts.InsertNextPoint(worldStartXY)
 
           self.expandShrinkVectors = []
-          self.expandShrinkVectors.append( (arrowSize, 0) )
-          self.expandShrinkVectors.append( (-arrowSize, 0) )
-          self.expandShrinkVectors.append( (0, arrowSize) )
-          self.expandShrinkVectors.append( (0, -arrowSize) )
+          self.expandShrinkVectors.append( (lineSize, 0) )
+          self.expandShrinkVectors.append( (-lineSize, 0) )
+          self.expandShrinkVectors.append( (0, lineSize) )
+          self.expandShrinkVectors.append( (0, -lineSize) )
           self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
           self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
           self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
@@ -1525,10 +1136,10 @@ class SteeredPolyAffineRegistrationLogic(object):
           pd.SetPoints(pts)
           pd.GetPointData().SetVectors(vectors)
 
-          arrowSource = vtk.vtkArrowSource()
+          lineSource = vtk.vtkArrowSource()
 
           self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
           self.movingArrowGlyph.ScalingOn()
           self.movingArrowGlyph.OrientOn()
           self.movingArrowGlyph.SetScaleFactor(1.0)
@@ -1546,7 +1157,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
         elif self.actionState == "shrinkStart":
 
-          # Drawing arrows for local shrinkage
+          # Drawing lines for local shrinkage
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1555,19 +1166,19 @@ class SteeredPolyAffineRegistrationLogic(object):
           coord = vtk.vtkCoordinate()
           coord.SetCoordinateSystemToDisplay()
 
-          coord.SetValue(self.arrowStartXY[0], self.arrowStartXY[1], 0.0)
+          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
           worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           coord.SetValue(xy[0], xy[1], 0.0)
           worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           # TODO: click and hold mode? requires a timer for detection
-          #arrowSize = (time.clock() - self.expandStartTime) * 0.1
-          arrowSize = 0.0
+          #lineSize = (time.clock() - self.expandStartTime) * 0.1
+          lineSize = 0.0
           for dim in xrange(2):
-            arrowSize += (xy[dim] - self.arrowStartXY[dim]) ** 2.0
-          arrowSize = math.sqrt(arrowSize)
-          dArrowSize = 0.7 * arrowSize
+            lineSize += (xy[dim] - self.lineStartXY[dim]) ** 2.0
+          lineSize = math.sqrt(lineSize)
+          dArrowSize = 0.7 * lineSize
 
           worldArrowSize = 0.0
           for dim in xrange(3):
@@ -1576,10 +1187,10 @@ class SteeredPolyAffineRegistrationLogic(object):
           dWorldArrowSize = 0.7*worldArrowSize
 
           self.expandShrinkVectors = []
-          self.expandShrinkVectors.append( (arrowSize, 0) )
-          self.expandShrinkVectors.append( (-arrowSize, 0) )
-          self.expandShrinkVectors.append( (0, arrowSize) )
-          self.expandShrinkVectors.append( (0, -arrowSize) )
+          self.expandShrinkVectors.append( (lineSize, 0) )
+          self.expandShrinkVectors.append( (-lineSize, 0) )
+          self.expandShrinkVectors.append( (0, lineSize) )
+          self.expandShrinkVectors.append( (0, -lineSize) )
           self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
           self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
           self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
@@ -1618,10 +1229,10 @@ class SteeredPolyAffineRegistrationLogic(object):
           pd.SetPoints(pts)
           pd.GetPointData().SetVectors(vectors)
 
-          arrowSource = vtk.vtkArrowSource()
+          lineSource = vtk.vtkArrowSource()
 
           self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(arrowSource.GetOutput())
+          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
           self.movingArrowGlyph.ScalingOn()
           self.movingArrowGlyph.OrientOn()
           self.movingArrowGlyph.SetScaleFactor(1.0)
@@ -1683,15 +1294,15 @@ class SteeredPolyAffineRegistrationLogic(object):
         renwin = sliceWidget.sliceView().renderWindow()
         rencol = renwin.GetRenderers()
         if rencol.GetNumberOfItems() >= 2:
-          rencol.GetItemAsObject(1).RemoveActor(self.arrowsActor)
+          rencol.GetItemAsObject(1).RemoveActor(self.linesActor)
           
         renwin.Render()
         
-    if not self.arrowQueue.empty():
+    if not self.lineQueue.empty():
     
-      numArrows = self.arrowQueue.qsize()
+      numArrows = self.lineQueue.qsize()
 
-      # TODO renwin = arrowTuple[1], need to maintain actors for each renwin?
+      # TODO renwin = lineTuple[1], need to maintain actors for each renwin?
       renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
 
       winsize = renwin.GetSize()
@@ -1709,12 +1320,12 @@ class SteeredPolyAffineRegistrationLogic(object):
       vectors.SetNumberOfTuples(numArrows)
       
       for i in xrange(numArrows):
-        arrowTuple = self.arrowQueue.queue[i]
-        sliceWidget = arrowTuple[1]
-        startXY = arrowTuple[2]
-        endXY = arrowTuple[3]
-        startRAS = arrowTuple[4]
-        endRAS = arrowTuple[5]
+        lineTuple = self.lineQueue.queue[i]
+        sliceWidget = lineTuple[1]
+        startXY = lineTuple[2]
+        endXY = lineTuple[3]
+        startRAS = lineTuple[4]
+        endRAS = lineTuple[5]
 
         coord.SetValue(startXY[0], startXY[1], 0.0)
         worldStartXY = coord.GetComputedWorldValue(ren)
@@ -1733,30 +1344,30 @@ class SteeredPolyAffineRegistrationLogic(object):
       pd.SetPoints(pts)
       pd.GetPointData().SetVectors(vectors)
       
-      arrowSource = vtk.vtkArrowSource()
-      #arrowSource.SetTipLength(1.0 / winsize[0])
-      #arrowSource.SetTipRadius(2.0 / winsize[0])
-      #arrowSource.SetShaftRadius(1.0 / winsize[0])
+      lineSource = vtk.vtkArrowSource()
+      #lineSource.SetTipLength(1.0 / winsize[0])
+      #lineSource.SetTipRadius(2.0 / winsize[0])
+      #lineSource.SetShaftRadius(1.0 / winsize[0])
 
-      self.arrowsGlyph.SetInput(pd)
-      self.arrowsGlyph.SetSource(arrowSource.GetOutput())
-      self.arrowsGlyph.ScalingOn()
-      self.arrowsGlyph.OrientOn()
-      self.arrowsGlyph.SetScaleFactor(1.0)
-      self.arrowsGlyph.SetVectorModeToUseVector()
-      self.arrowsGlyph.SetScaleModeToScaleByVector()
-      self.arrowsGlyph.Update()
+      self.linesGlyph.SetInput(pd)
+      self.linesGlyph.SetSource(lineSource.GetOutput())
+      self.linesGlyph.ScalingOn()
+      self.linesGlyph.OrientOn()
+      self.linesGlyph.SetScaleFactor(1.0)
+      self.linesGlyph.SetVectorModeToUseVector()
+      self.linesGlyph.SetScaleModeToScaleByVector()
+      self.linesGlyph.Update()
       
-      self.arrowsMapper.SetInput(self.arrowsGlyph.GetOutput())
+      self.linesMapper.SetInput(self.linesGlyph.GetOutput())
       
-      self.arrowsActor.SetMapper(self.arrowsMapper)
+      self.linesActor.SetMapper(self.linesMapper)
 
       # TODO add actors to the appropriate widgets (or all?)
       # TODO make each renwin have two ren's from beginning?
 
       renOverlay = self.getOverlayRenderer(renwin)
 
-      renOverlay.AddActor(self.arrowsActor)
+      renOverlay.AddActor(self.linesActor)
 
       renwin.Render()
 

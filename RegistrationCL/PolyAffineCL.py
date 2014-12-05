@@ -14,9 +14,13 @@
 #
 
 
-#TODO:
-# use volume node / vtkimage as inputs, only convert blocks to ImageCL
-# as needed
+# TODO:
+# - rewrite optimize() and add alternative allowing  user interruption at each
+#   step  (setup_optimizer() then repeated calls to step())
+# - use volume node / vtkimage as inputs, only convert blocks to ImageCL
+#   as needed, make sure it can handle big images
+# - anchor merging, blend two affines if anchors are close together
+#   define objective function or use heuristic?
 
 from ImageCL import ImageCL
 from DeformationCL import DeformationCL
@@ -39,7 +43,9 @@ class PolyAffineCL:
     self.origMovingCL = movingCL
     self.movingCL = movingCL
 
-    self.convergenceRatio = 1e-5
+    self.origin = numpy.array(self.fixedCL.origin, dtype=numpy.single)
+
+    self.convergenceRatio = 1e-4
 
   def create_identity(self, number_per_axis=3):
     """Identity transform with equal number of affines at each axis"""
@@ -51,22 +57,22 @@ class PolyAffineCL:
     shape = self.fixedCL.shape
     spacing = self.fixedCL.spacing
 
-    rad = numpy.ones((3,1), dtype=numpy.float32)
+    rad = numpy.ones((3,1), dtype=numpy.single)
     for d in range(3):
       rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1)
 
-    A0 = numpy.zeros((3,3), dtype=numpy.float32)
-    #A0 = numpy.eye(3, dtype=numpy.float32)
-    T0 = numpy.zeros((3,1), dtype=numpy.float32)
+    A0 = numpy.zeros((3,3), dtype=numpy.single)
+    #A0 = numpy.eye(3, dtype=numpy.single)
+    T0 = numpy.zeros((3,1), dtype=numpy.single)
 
     for i in range(number_per_axis):
-      cx = (i+1) * (shape[0]-1) * spacing[0] / (number_per_axis+1)
+      cx = (i+1) * (shape[0]-1) * spacing[0] / (number_per_axis+1) + self.origin[0]
       for j in range(number_per_axis):
-        cy = (j+1) * (shape[1]-1) * spacing[1] / (number_per_axis+1)
+        cy = (j+1) * (shape[1]-1) * spacing[1] / (number_per_axis+1) + self.origin[1]
         for k in range(number_per_axis):
-          cz = (k+1) * (shape[2]-1) * spacing[2] / (number_per_axis+1)
+          cz = (k+1) * (shape[2]-1) * spacing[2] / (number_per_axis+1) + self.origin[2]
 
-          C = numpy.array([cx, cy, cz], dtype=numpy.float32)
+          C = numpy.array([cx, cy, cz], dtype=numpy.single)
           C = C.reshape(3, 1)
 
           #print "Adding affine at center", C, "radius", rad
@@ -115,6 +121,8 @@ class PolyAffineCL:
     # Alternating gradient descent with adaptive step sizes
     for iter in range(maxIters):
 
+      prevErrorL2 = errorL2
+
       # Translation
       dTList = self.gradient_translation()
 
@@ -149,7 +157,6 @@ class PolyAffineCL:
 
           stepT *= 1.2
 
-          prevErrorL2 = errorL2
           errorL2 = errorL2Test
 
           self.movingCL = M
@@ -160,9 +167,6 @@ class PolyAffineCL:
         else:
           stepT *= 0.5
 
-      if abs(errorL2 - prevErrorL2) < self.convergenceRatio * abs(errorL2 - refErrorL2):
-        break
-
       # Affine
       dAList = self.gradient_affine()
 
@@ -170,7 +174,7 @@ class PolyAffineCL:
         max_dA = 1e-10
         for q in range(numTransforms):
           max_dA = max(numpy.max(numpy.abs(dAList[q])), max_dA)
-        stepA = 0.05 / max_dA
+        stepA = 0.1 / max_dA
 
       print "Line search affine"
       for lineIter in range(20):
@@ -197,7 +201,6 @@ class PolyAffineCL:
 
           stepA *= 1.2
 
-          prevErrorL2 = errorL2
           errorL2 = errorL2Test
 
           self.movingCL = M
@@ -208,8 +211,6 @@ class PolyAffineCL:
         else:
           stepA *= 0.5
 
-      if abs(errorL2 - prevErrorL2) < self.convergenceRatio * abs(errorL2 - refErrorL2):
-        break
 
       # Anchor positions
       dCList = self.gradient_anchor()
@@ -245,7 +246,6 @@ class PolyAffineCL:
 
           stepC *= 1.2
 
-          prevErrorL2 = errorL2
           errorL2 = errorL2Test
 
           self.movingCL = M
@@ -286,7 +286,7 @@ class PolyAffineCL:
     CoordCL = []
     for d in range(3):
       cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.spacing)
+      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
       CoordCL.append(cc)
     """
 
@@ -312,23 +312,24 @@ class PolyAffineCL:
 
       GList = M.gradient()
 
-      CF = numpy.array(F.shape, dtype=numpy.float32) / 2.0
-      W = self._gaussian(F.shape, CF, r/2.0)
+      CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
+      W = self._gaussian(F.shape, CF, r)
+      #W = self._gaussian(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
-      gradA = numpy.zeros((3,3), dtype=numpy.float32)
+      gradA = numpy.zeros((3,3), dtype=numpy.single)
       for i in range(3):
         for j in range(3):
           GX = GList[i].multiply(XList[j])
           gradA[i,j] = -2.0 * WD.multiply(GX).sum()
 
-      gradT = numpy.zeros((3,1), dtype=numpy.float32)
+      gradT = numpy.zeros((3,1), dtype=numpy.single)
       for d in range(3):
         gradT[d] = -2.0 * WD.multiply(GList[d]).sum()
 
-      gradC = numpy.zeros((3,1), dtype=numpy.float32)
-      gradR = numpy.zeros((3,1), dtype=numpy.float32)
+      gradC = numpy.zeros((3,1), dtype=numpy.single)
+      gradR = numpy.zeros((3,1), dtype=numpy.single)
 
       dot_AT_XC = F.clone()
       dot_AT_XC.fill(0.0)
@@ -386,7 +387,7 @@ class PolyAffineCL:
     CoordCL = []
     for d in range(3):
       cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.spacing)
+      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
       CoordCL.append(cc)
     """
 
@@ -412,12 +413,13 @@ class PolyAffineCL:
 
       GList = M.gradient()
 
-      CF = numpy.array(F.shape, dtype=numpy.float32) / 2.0
-      W = self._gaussian(F.shape, CF, r/2.0)
+      CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
+      W = self._gaussian(F.shape, CF, r)
+      #W = self._gaussian(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
-      gradA = numpy.zeros((3,3), dtype=numpy.float32)
+      gradA = numpy.zeros((3,3), dtype=numpy.single)
       for i in range(3):
         for j in range(3):
           GX = GList[i].multiply(XList[j])
@@ -444,7 +446,7 @@ class PolyAffineCL:
     CoordCL = []
     for d in range(3):
       cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.spacing)
+      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
       CoordCL.append(cc)
     """
 
@@ -470,12 +472,13 @@ class PolyAffineCL:
 
       GList = M.gradient()
 
-      CF = numpy.array(F.shape, dtype=numpy.float32) / 2.0
-      W = self._gaussian(F.shape, CF, r/2.0)
+      CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
+      W = self._gaussian(F.shape, CF, r)
+      #W = self._gaussian(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
-      gradT = numpy.zeros((3,1), dtype=numpy.float32)
+      gradT = numpy.zeros((3,1), dtype=numpy.single)
       for d in range(3):
         gradT[d] = -2.0 * WD.multiply(GList[d]).sum()
 
@@ -500,7 +503,7 @@ class PolyAffineCL:
     CoordCL = []
     for d in range(3):
       cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.spacing)
+      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
       CoordCL.append(cc)
     """
 
@@ -526,12 +529,13 @@ class PolyAffineCL:
 
       GList = M.gradient()
 
-      CF = numpy.array(F.shape, dtype=numpy.float32) / 2.0
-      W = self._gaussian(F.shape, CF, r/2.0)
+      CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
+      W = self._gaussian(F.shape, CF, r)
+      #W = self._gaussian(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
-      gradC = numpy.zeros((3,1), dtype=numpy.float32)
+      gradC = numpy.zeros((3,1), dtype=numpy.single)
 
       dot_AT_XC = F.clone()
       dot_AT_XC.fill(0.0)
@@ -558,7 +562,7 @@ class PolyAffineCL:
 
     return gradC_list
 
-  def apply(self, image):
+  def applyTo(self, image):
     """
     Apply poly-affine transform to an image.
     """
@@ -599,7 +603,7 @@ class PolyAffineCL:
     CoordCL = []
     for d in range(3):
       cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.spacing)
+      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
       CoordCL.append(cc)
     """
 
@@ -621,7 +625,7 @@ class PolyAffineCL:
 
       r = self.radii[q]
 
-      W = self._gaussian(shape, C, r/2.0)
+      W = self._gaussian(shape, C, r)
       # W = W.divide(WSum)
 
       WX = []
@@ -659,8 +663,8 @@ class PolyAffineCL:
     for d in range(3):
       Coord[d] -= center[d]
 
-    #G = numpy.ones(shape, dtype=numpy.float32)
-    G = numpy.zeros(shape, dtype=numpy.float32)
+    #G = numpy.ones(shape, dtype=numpy.single)
+    G = numpy.zeros(shape, dtype=numpy.single)
     for d in range(3):
       G += (Coord[d] / radii[d]) ** 2.0
     G = numpy.exp(-0.5 * G)
@@ -668,12 +672,16 @@ class PolyAffineCL:
     #G /= numpy.sum(G)
 
     gaussianCL = ImageCL(self.fixedCL.preferredDeviceType)
-    gaussianCL.fromArray(G, self.fixedCL.spacing)
+    gaussianCL.fromArray(G, self.fixedCL.origin, self.fixedCL.spacing)
     """
 
+    origin = numpy.array(center, dtype=numpy.single)
+    for dim in range(3):
+      origin[dim] -= radii[dim]
+
     temp = ImageCL(self.fixedCL.preferredDeviceType)
-    temparr = numpy.zeros(shape, dtype=numpy.float32)
-    temp.fromArray(temparr, self.fixedCL.spacing) 
+    temparr = numpy.zeros(shape, dtype=numpy.single)
+    temp.fromArray(temparr, origin, self.fixedCL.spacing) 
 
     Phi = DeformationCL(temp)
 
@@ -732,10 +740,10 @@ class PolyAffineCL:
 
     numAffines = n.uint32(len(self.centers))
 
-    centers_array = cl.array.zeros(image.clqueue, (numAffines,3), n.float32)
-    widths_array = cl.array.zeros(image.clqueue, (numAffines,1), n.float32)
-    matrices_array = cl.array.zeros(image.clqueue, (numAffines,9), n.float32)
-    trans_array = cl.array.zeros(image.clqueue, (numAffines,3), n.float32)
+    centers_array = cl.array.zeros(image.clqueue, (numAffines,3), n.single)
+    widths_array = cl.array.zeros(image.clqueue, (numAffines,1), n.single)
+    matrices_array = cl.array.zeros(image.clqueue, (numAffines,9), n.single)
+    trans_array = cl.array.zeros(image.clqueue, (numAffines,3), n.single)
 
     for i in xrange(numAffines):
       centers_array[i,:] = self.centers[i]

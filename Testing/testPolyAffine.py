@@ -15,8 +15,8 @@ sys.path.append("..")
 from RegistrationCL import *
 
 # Which CL device?
-preferredDeviceType = "CPU"
-#preferredDeviceType = "GPU"
+#preferredDeviceType = "CPU"
+preferredDeviceType = "GPU"
 
 fixedImage = sitk.ReadImage(sys.argv[1])
 
@@ -29,11 +29,10 @@ print fixedArray.shape
 print movingArray.shape
 
 fixedCL = ImageCL(preferredDeviceType)
-fixedCL.fromArray(fixedArray, fixedImage.GetSpacing())
+fixedCL.fromArray(fixedArray, fixedImage.GetOrigin(), fixedImage.GetSpacing())
 
 movingCL = ImageCL(preferredDeviceType)
-#movingCL.fromArray(movingArray, movingImage.GetSpacing())
-movingCL.fromArray(movingArray, fixedImage.GetSpacing())
+movingCL.fromArray(movingArray, fixedImage.GetOrigin(), fixedImage.GetSpacing())
 
 polyAffine = PolyAffineCL(fixedCL, movingCL)
 polyAffine.create_identity(4)
@@ -43,5 +42,6 @@ warpedCL = polyAffine.movingCL
 warpedArray = warpedCL.clarray.get().astype('float32')
 
 warpedImage = sitk.GetImageFromArray(warpedArray)
+warpedImage.SetOrigin(fixedImage.GetOrigin())
 warpedImage.SetSpacing(fixedImage.GetSpacing())
 sitk.WriteImage(warpedImage, "warped.nrrd")

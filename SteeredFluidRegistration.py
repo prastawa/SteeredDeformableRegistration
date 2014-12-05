@@ -43,7 +43,7 @@ class SteeredFluidRegistration:
     Steerable fluid registration example as a scripted loadable extension.
     """
     parent.acknowledgementText = """
-    Funded by NIH grant 3P41RR013218.
+    Funded by NIH grant P41RR013218 (NAC).
 """ # replace with organization, grant and thanks.
     self.parent = parent
 

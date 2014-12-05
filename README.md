@@ -5,3 +5,7 @@ Slicer plug-ins for steered image registration combining interactive user update
 
 The software is implemented using OpenCL to facilitate quick feedback and
 smooth user interactions.
+
+Demo video for fluid flow registration using direct steering:
+
+[![Youtube](http://img.youtube.com/vi/sfAMD5wSvlQ/0.jpg)](http://www.youtube.com/watch?v=sfAMD5wSvlQ)

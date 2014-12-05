@@ -149,10 +149,12 @@ moving_image_array = moving_image_array.transpose(2, 1, 0)
 print fixed_image_vtk.GetScalarRange()
 print moving_image_vtk.GetScalarRange()
 
-fixedCL = ImageCL("CPU")
+preferredDeviceType = "GPU"
+
+fixedCL = ImageCL(preferredDeviceType)
 fixedCL.fromArray(fixed_image_array)
 
-movingCL = ImageCL("CPU")
+movingCL = ImageCL(preferredDeviceType)
 movingCL.fromArray(moving_image_array)
 
 center = np.array([cx, cy, cz], np.float32)

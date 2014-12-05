@@ -1,4 +1,16 @@
 
+#
+# ImageQuery: intelligent visualization of misalignment and query user for
+# correction hints
+#
+# Author: Marcel Prastawa (marcel.prastawa@gmail.com)
+#
+
+# TODO:
+# - allow user to edit visualization axis
+# - gestures for hints (rotation, scale)
+
+
 from ImageCL import ImageCL
 
 import numpy as np

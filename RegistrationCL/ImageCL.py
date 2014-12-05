@@ -55,7 +55,6 @@ class ImageCL:
     print("Device compute units:", device.max_compute_units)
 
     # Compile OpenCL code and create program object
-    # TODO: compile different code versions for different params and sizes?
     sourcePath = os.path.dirname( os.path.realpath(__file__) )
     clFileName = os.path.join(sourcePath, "ImageFunctions.cl")
 
@@ -69,12 +68,12 @@ class ImageCL:
 
   @staticmethod
   def setup():
-    if ImageCL.clcontext_CPU is None:
-      ImageCL.clcontext_CPU, ImageCL.clqueue_CPU, ImageCL.clprogram_CPU = \
-        ImageCL.setup_device("CPU")
     if ImageCL.clcontext_GPU is None:
       ImageCL.clcontext_GPU, ImageCL.clqueue_GPU, ImageCL.clprogram_GPU = \
         ImageCL.setup_device("GPU")
+    if ImageCL.clcontext_CPU is None:
+      ImageCL.clcontext_CPU, ImageCL.clqueue_CPU, ImageCL.clprogram_CPU = \
+        ImageCL.setup_device("CPU")
 
   def __init__(self, preferredDeviceType="CPU"):
 
@@ -147,7 +146,7 @@ class ImageCL:
     self.originalIJKToRAS = vtk.vtkMatrix4x4()
     volume.GetIJKToRASDirectionMatrix(self.originalIJKToRAS)
 
-    nspacing = n.zeros((3,), dtype=n.float32)
+    nspacing = n.zeros((3,), dtype=n.single)
     for dim in xrange(3):
       nspacing[dim] = self.spacing[dim]
     self.clspacing = cla.to_device(self.clqueue, nspacing)
@@ -165,19 +164,20 @@ class ImageCL:
         #vtkimage.GetPointData().GetScalars()).reshape(self.shape)
     narray = n.asfortranarray(narray)
     narray = narray.transpose(2, 1, 0)
-    narray = narray.astype('float32')
+    narray = narray.astype('single')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
     vtkimage = None
 
-  def fromArray(self, imarray, spacing=[1,1,1]):
+  def fromArray(self, imarray, origin=[0,0,0], spacing=[1,1,1]):
     """Fill data using a numpy array along with spacing information"""
 
-    self.shape = imarray.shape
+    self.shape = list(imarray.shape)
+    #self.origin = list(origin)
     self.origin = [0, 0, 0]
-    self.spacing = spacing
+    self.spacing = list(spacing)
 
-    nspacing = n.zeros((3,), dtype=n.float32)
+    nspacing = n.zeros((3,), dtype=n.single)
     for dim in xrange(3):
       nspacing[dim] = self.spacing[dim]
     self.clspacing = cla.to_device(self.clqueue, nspacing)
@@ -187,7 +187,7 @@ class ImageCL:
       nsize[dim] = self.shape[dim]
     self.clsize = cla.to_device(self.clqueue, nsize)
 
-    narray = imarray.astype('float32')
+    narray = imarray.astype('single')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
   def getROI(self, center, radius):
@@ -198,15 +198,17 @@ class ImageCL:
     for d in range(3):
       voxrad[d] = radius[d] / self.spacing[d]
 
+    origin = self.origin
+
     X0 = [0,0,0]
     X1 = [self.shape[0]-1, self.shape[1]-1, self.shape[2]-1]
 
     for d in range(3):
-      p0 = int(center[d]/self.spacing[d] - voxrad[d])
+      p0 = int((center[d]-origin[d])/self.spacing[d] - voxrad[d])
       p0 = max(0, p0)
       p0 = min(self.shape[d]-1, p0)
 
-      p1 = int(center[d]/self.spacing[d] + voxrad[d])
+      p1 = int((center[d]-origin[d])/self.spacing[d] + voxrad[d])
       p1 = max(0, p1)
       p1 = min(self.shape[d]-1, p1)
 
@@ -226,15 +228,21 @@ class ImageCL:
 
     #print "subarr shape", subarr.shape
 
-    outimgcl = ImageCL(self.preferredDeviceType)
-    outimgcl.fromArray(subarr, self.spacing)
+    origin = list(self.origin)
+    #for dim in range(3):
+    #  origin[dim] += X0[dim]*self.spacing[dim]
 
+    outimgcl = ImageCL(self.preferredDeviceType)
+    outimgcl.fromArray(subarr, origin, self.spacing)
+
+    # TODO: allow recompositing
     #return outimgcl, X0, X1
+
     return outimgcl
 
   def toVTKImage(self):
     """Returns vtkImageData containing image from GPU memory"""
-    narray = self.clarray.get().astype('float32')
+    narray = self.clarray.get().astype('single')
     narray = narray.transpose(2, 1, 0)
 
     vtkarray = vtk.util.numpy_support.numpy_to_vtk(narray.flatten(), deep=True)
@@ -394,14 +402,14 @@ class ImageCL:
     tempclarray = outimgcl.clarray.copy()
 
     sx = sigma / self.spacing[0]
-    varx = n.float32(sx * sx)
+    varx = n.single(sx * sx)
     widthx = n.int32(3 * sx)
     self.clprogram.gaussian_x(self.clqueue, self.shape, None,
       tempclarray.data, self.clsize.data,
       varx, widthx, outimgcl.clarray.data).wait()
 
     sy = sigma / self.spacing[1]
-    vary = n.float32(sx * sy)
+    vary = n.single(sx * sy)
     widthy = n.int32(3 * sy)
     self.clprogram.gaussian_y(self.clqueue, self.shape, None,
       outimgcl.clarray.data, self.clsize.data,
@@ -409,7 +417,7 @@ class ImageCL:
       tempclarray.data).wait()
 
     sz = sigma / self.spacing[2]
-    varz = n.float32(sx * sz)
+    varz = n.single(sx * sz)
     widthz = n.int32(3 * sz)
     self.clprogram.gaussian_z(self.clqueue, self.shape, None,
       tempclarray.data, self.clsize.data,
@@ -426,17 +434,17 @@ class ImageCL:
     sizeY = self.shape[1]
     sizeZ = self.shape[2]
 
-    sz = n.float32(sigma / self.spacing[2])
+    sz = n.single(sigma / self.spacing[2])
     outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
       (sizeX, sizeY), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sz).wait()
 
-    sy = n.float32(sigma / self.spacing[1])
+    sy = n.single(sigma / self.spacing[1])
     outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
       (sizeX, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sy).wait()
 
-    sx = n.float32(sigma / self.spacing[0])
+    sx = n.single(sigma / self.spacing[0])
     outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
       (sizeY, sizeZ), None,
       outimgcl.clarray.data, outimgcl.clsize.data, sx).wait()
@@ -452,16 +460,18 @@ class ImageCL:
   def resample(self, targetShape):
     """Resample GPU data to specified size"""
 
-    # TODO do some filtering if downsampling?
+    # Do some filtering if downsampling an image
+    smoothimgcl = self
+
     """
     isDownsampling = False
     for dim in xrange(3):
-      if targetShape[dim] <= self.shape[dim] / 2:
+      if targetShape[dim] < self.shape[dim]:
         isDownsampling = True
         break
     minspacing = min(self.spacing)
     if isDownsampling:
-      smoothimgcl = self.discrete_gaussian(minspacing)
+      smoothimgcl = self.recursive_gaussian(minspacing)
     """
 
     outimgcl = self.clone_empty()
@@ -473,7 +483,7 @@ class ImageCL:
       outimgcl.clsize[dim] = targetShape[dim]
       outimgcl.clspacing[dim] = outimgcl.spacing[dim]
 
-    outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, n.float32)
+    outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, n.single)
 
     hxclarray = cl.array.zeros_like(outimgcl.clarray)
     hyclarray = cl.array.zeros_like(outimgcl.clarray)
@@ -484,7 +494,8 @@ class ImageCL:
       hxclarray.data,  hyclarray.data, hzclarray.data).wait()
     
     self.clprogram.interpolate(self.clqueue, targetShape, None,
-      self.clarray.data,
+      #self.clarray.data,
+      smoothimgcl.clarray.data,
       self.clsize.data, self.clspacing.data,
       hxclarray.data, hyclarray.data, hzclarray.data,
       outimgcl.clarray.data,
