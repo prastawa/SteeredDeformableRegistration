@@ -13,8 +13,8 @@ import numpy as n
 import pyopencl as cl
 import pyopencl.array as cla
 
-from RegistrationCL import ImageCL, DeformationCL, PolyAffineCL, \
-  SteeringRotation, SteeringScale
+from RegistrationCL import (ImageCL, DeformationCL, PolyAffineCL,
+  SteeringRotation, SteeringScale)
 
 # TODO add support for downsampling and upsampling?
 # TODO use image patch / compositing instead
@@ -46,7 +46,7 @@ class SteeredPolyAffineRegistration:
     """
     parent.acknowledgementText = """
     Funded by NIH grant P41RR013218 (NAC).
-""" # replace with organization, grant and thanks.
+    """ # replace with organization, grant and thanks.
     self.parent = parent
 
 ################################################################################
@@ -213,8 +213,6 @@ class SteeredPolyAffineRegistrationWidget:
     # Interaction options collapsible button
     #
 
-    # TODO: pull, expand, shrink checkbuttons -- default is pull
-
     uiOptCollapsibleButton = ctk.ctkCollapsibleButton()
     uiOptCollapsibleButton.text = "Steering UI Parameters"
     self.layout.addWidget(uiOptCollapsibleButton)
@@ -242,7 +240,7 @@ class SteeredPolyAffineRegistrationWidget:
     self.numberAffinesSlider.decimals = 0
     self.numberAffinesSlider.singleStep = 1
     self.numberAffinesSlider.minimum = 1
-    self.numberAffinesSlider.maximum = 100
+    self.numberAffinesSlider.maximum = 20
     self.numberAffinesSlider.toolTip = "Number of affines in each dim"
     uiOptFormLayout.addRow("Number of affines per dim:", self.numberAffinesSlider)
 
@@ -313,6 +311,9 @@ class SteeredPolyAffineRegistrationWidget:
     # Execution triggers
     #
 
+    # TODO:
+    # add check box for auto registration on/off
+
     # Start button
     self.regButton = qt.QPushButton("Start")
     self.regButton.toolTip = "Run steered registration"
@@ -345,7 +346,7 @@ class SteeredPolyAffineRegistrationWidget:
 
   def updateLogicFromGUI(self, args):
 
-    # Handled by logic on start
+    # Handled by logic on registration start
     #self.logic.useFixedVolume(self.fixedSelector.currentNode())
     #self.logic.useMovingVolume(self.movingSelector.currentNode())
 
@@ -513,6 +514,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
     # optimizer state variables
     self.iteration = 0
+
     self.interaction = False
 
     self.steerMode = "rotate"
@@ -523,9 +525,10 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.lastEventPosition = [0.0, 0.0, 0.0]
     self.startEventPosition = [0.0, 0.0, 0.0]
     
-    # Queue containing info on line draw events, tuples of
-    # (Mtime, xy0, RAS0, xy1, RAS1, sliceWidget)
-    self.lineQueue = Queue.Queue()
+    # Queue containing info on steering action events, tuples of
+    # (Mtime, action, xy0, RAS0, xy1, RAS1, sliceWidget)
+    # Draw added poly affine correction? Fold it immediately?
+    self.actionQueue = Queue.Queue()
 
     self.lineStartXY = (0, 0, 0)
     self.lineEndXY = (0, 0, 0)
@@ -745,13 +748,11 @@ class SteeredPolyAffineRegistrationLogic(object):
     applicationLogic = slicer.app.applicationLogic()
     applicationLogic.FitSliceToAll()
     
-    # TODO: initialize poly affine
-    # One big affine?
-    # Eight affine blocks?
-
+    # Initialize poly affine
     self.polyAffine = PolyAffineCL(self.fixedImageCL, self.movingImageCL)
     self.polyAffine.create_identity(self.numberAffines)
-    self.polyAffine.setup_optimizer()
+    # TODO: use radius info from GUI
+    self.polyAffine.optimize_setup()
 
     self.registrationIterationNumber = 0;
     qt.QTimer.singleShot(self.interval, self.updateStep)       
@@ -768,13 +769,13 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registration iteration %d' %(self.registrationIterationNumber))
 
-    isLineUsed = False
+    isCorrected = False
 
-    self.polyAffineCL.step()
+    self.polyAffineCL.optimize_step()
     
-    if not self.lineQueue.empty():
+    if not self.actionQueue.empty():
       self.invoke_correction()
-      isLineUsed = True
+      isCorrected = True
 
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
@@ -790,10 +791,9 @@ class SteeredPolyAffineRegistrationLogic(object):
 
   def invoke_correction(self):
     
-    widget= slicer.modules.SteeredPolyAffineRegistrationWidget
+    """
+    widget = slicer.modules.SteeredPolyAffineRegistrationWidget
 
-    # Determine region center and radius
-              
     #fixedVolume = widget.fixedSelector.currentNode()
     #movingVolume = widget.movingSelector.currentNode()
     fixedVolume = self.axialFixedVolume
@@ -805,8 +805,31 @@ class SteeredPolyAffineRegistrationLogic(object):
     spacing = self.fixedImageCL.spacing
 
     origin = movingVolume.GetOrigin()
+    """
 
-    # TODO
+    actionItem = self.actionQueue.get()
+
+    x = actionItem[3]
+    y = actionItem[5]
+
+    r = 1.5 * np.norm(x - y)
+
+    steerMode = actionItem[1]
+
+    if steerMode == "rotate":
+      steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, r)
+    elif steerMode == "scale":
+      steerer = SteeringScale(self.fixedImageCL, self.movingImageCL, x, r)
+    else:
+      print "WARNING: unknown steering action"
+      return
+
+    A, T = steerer.steer()
+
+    # Append user defined affine to polyaffine
+    self.polyAffineCL.add_affine(A, T, x, r)
+
+    # TODO: reinitialize optimizer? Fix user affine?
 
   def processEvent(self,observee,event=None):
 
@@ -854,23 +877,8 @@ class SteeredPolyAffineRegistrationLogic(object):
         self.abortEvent(event)
       
       elif event == "LeftButtonPressEvent":
-      
-        if self.steerMode == "pull" and nodeIndex > 2 and self.lastHoveredGradMag > 0.01:
-          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
-          app.setOverrideCursor(cursor)
-        
-          xy = style.GetInteractor().GetEventPosition()
-          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
 
-          self.startEventPosition = ras
-        
-          self.actionState = "pullStart"
-        
-          self.lineStartXY = xy
-          self.lineStartRAS = ras
-
-        elif self.steerMode == "expand" and nodeIndex > 2:
+        if nodeIndex > 2:
 
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
@@ -881,28 +889,12 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           self.startEventPosition = ras
         
-          self.actionState = "expandStart"
+          self.actionState = "steerStart"
 
-          self.expandStartTime = time.clock()
+          self.steerStartTime = time.clock()
         
-          self.lineStartXY = xy
-          self.lineStartRAS = ras
-
-        elif self.steerMode == "shrink" and nodeIndex > 2:
-
-          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
-          app.setOverrideCursor(cursor)
-        
-          xy = style.GetInteractor().GetEventPosition()
-          xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-          ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
-
-          self.startEventPosition = ras
-        
-          self.actionState = "shrinkStart"
-
-          self.lineStartXY = xy
-          self.lineStartRAS = ras
+          self.steerStartXY = xy
+          self.steerStartRAS = ras
       
         else:
           self.actionState = "clickReject"
@@ -911,7 +903,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
       elif event == "LeftButtonReleaseEvent":
       
-        if self.actionState == "pullStart":
+        if self.actionState == "steerStart":
           cursor = qt.QCursor(qt.Qt.OpenHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -921,70 +913,18 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           self.lastEventPosition = ras
 
-          self.lineEndXY = xy
-          self.lineEndRAS = ras
+          self.steerEndXY = xy
+          self.steerEndRAS = ras
 
           # TODO: only draw line within ??? seconds
           self.lastDrawMTime = sliceNode.GetMTime()
           
           self.lastDrawSliceWidget = sliceWidget
 
-          self.lineQueue.put(
-            (sliceNode.GetMTime(), sliceWidget, self.lineStartXY, self.lineEndXY, self.lineStartRAS, self.lineEndRAS) )
-
-          renOverlay = self.getOverlayRenderer(
-            style.GetInteractor().GetRenderWindow() )
-          renOverlay.RemoveActor(self.movingArrowActor)
-
-        if self.actionState == "expandStart":
-          cursor = qt.QCursor(qt.Qt.OpenHandCursor)
-          app.setOverrideCursor(cursor)
-
-          # TODO: only draw line within ??? seconds
-          self.lastDrawMTime = sliceNode.GetMTime()
-          
-          self.lastDrawSliceWidget = sliceWidget
-
-          a = self.lineStartXY
-          for i in xrange(len(self.expandShrinkVectors)):
-            v = self.expandShrinkVectors[i]
-            xy = (a[0]+v[0], a[1]+v[1], 0.0)
-
-            xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-            ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
-
-            lineEndXY = xy
-            lineEndRAS = ras
-
-            self.lineQueue.put(
-              (sliceNode.GetMTime(), sliceWidget, self.lineStartXY, lineEndXY, self.lineStartRAS, lineEndRAS) )
-
-          renOverlay = self.getOverlayRenderer(
-            style.GetInteractor().GetRenderWindow() )
-          renOverlay.RemoveActor(self.movingArrowActor)
-
-        if self.actionState == "shrinkStart":
-          cursor = qt.QCursor(qt.Qt.OpenHandCursor)
-          app.setOverrideCursor(cursor)
-
-          # TODO: only draw line within ??? seconds
-          self.lastDrawMTime = sliceNode.GetMTime()
-          
-          self.lastDrawSliceWidget = sliceWidget
-
-          a = self.lineStartXY
-          for i in xrange(len(self.expandShrinkVectors)):
-            v = self.expandShrinkVectors[i]
-            xy = (a[0]+v[0], a[1]+v[1], 0.0)
-
-            xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
-            ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
-
-            lineEndXY = xy
-            lineEndRAS = ras
-
-            self.lineQueue.put(
-              (sliceNode.GetMTime(), sliceWidget, lineEndXY, self.lineStartXY, lineEndRAS, self.lineStartRAS) )
+          self.actionQueue.put(
+            (sliceNode.GetMTime(), self.steerMode, sliceWidget,
+             self.steerStartXY, self.steerEndXY
+             self.steerStartRAS, self.steerEndRAS) )
 
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
@@ -996,10 +936,9 @@ class SteeredPolyAffineRegistrationLogic(object):
 
       elif event == "MouseMoveEvent":
 
-        if self.actionState == "interacting" and self.steerMode == "pull":
+        if self.actionState == "interacting":
 
-          # Hovering when pulling -> change cursors based on gradient
-          
+          """
           xy = style.GetInteractor().GetEventPosition()
           xyz = sliceWidget.sliceView().convertDeviceToXYZ(xy)
           ras = sliceWidget.sliceView().convertXYZToRAS(xyz)
@@ -1010,6 +949,7 @@ class SteeredPolyAffineRegistrationLogic(object):
           w.movingSelector.currentNode().GetRASToIJKMatrix(movingRAStoIJK)
      
           ijk = movingRAStoIJK.MultiplyPoint(ras + (1,))
+          """
           
           if nodeIndex > 2:
             cursor = qt.QCursor(qt.Qt.OpenHandCursor)
@@ -1018,11 +958,10 @@ class SteeredPolyAffineRegistrationLogic(object):
             cursor = qt.QCursor(qt.Qt.ForbiddenCursor)
             app.setOverrideCursor(cursor)
             
-          self.lastHoveredGradMag = g
+        elif self.actionState == "steerStart":
 
-        elif self.actionState == "pullStart":
-
-          # Drawing an line that pulls/drags voxels
+          # Drawing a line that shows ROI
+          # TODO: add drawing of box
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1031,7 +970,7 @@ class SteeredPolyAffineRegistrationLogic(object):
           coord = vtk.vtkCoordinate()
           coord.SetCoordinateSystemToDisplay()
 
-          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
+          coord.SetValue(self.steerStartXY[0], self.steerStartXY[1], 0.0)
           worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
 
           coord.SetValue(xy[0], xy[1], 0.0)
@@ -1070,184 +1009,6 @@ class SteeredPolyAffineRegistrationLogic(object):
             style.GetInteractor().GetRenderWindow() )
           renOverlay.AddActor(self.movingArrowActor)
 
-        elif self.actionState == "expandStart":
-
-          # Drawing lines for local expansion
-          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
-          app.setOverrideCursor(cursor)
-
-          xy = style.GetInteractor().GetEventPosition()
-
-          coord = vtk.vtkCoordinate()
-          coord.SetCoordinateSystemToDisplay()
-
-          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
-          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          coord.SetValue(xy[0], xy[1], 0.0)
-          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          # TODO: click and hold mode? requires a timer for detection
-          #lineSize = (time.clock() - self.expandStartTime) * 0.1
-          lineSize = 0.0
-          for dim in xrange(2):
-            lineSize += (xy[dim] - self.lineStartXY[dim]) ** 2.0
-          lineSize = math.sqrt(lineSize)
-          dArrowSize = 0.7 * lineSize
-
-          worldArrowSize = 0.0
-          for dim in xrange(3):
-            worldArrowSize += (worldXY[dim] - worldStartXY[dim]) ** 2.0
-          worldArrowSize = math.sqrt(worldArrowSize)
-          dWorldArrowSize = 0.7*worldArrowSize
-
-          pts = vtk.vtkPoints()
-          for count in xrange(8):
-            pts.InsertNextPoint(worldStartXY)
-
-          self.expandShrinkVectors = []
-          self.expandShrinkVectors.append( (lineSize, 0) )
-          self.expandShrinkVectors.append( (-lineSize, 0) )
-          self.expandShrinkVectors.append( (0, lineSize) )
-          self.expandShrinkVectors.append( (0, -lineSize) )
-          self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
-          self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
-          self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
-          self.expandShrinkVectors.append( (-dArrowSize, -dArrowSize) )
-
-          worldExpandShrinkVectors = []
-          worldExpandShrinkVectors.append( (worldArrowSize, 0) )
-          worldExpandShrinkVectors.append( (-worldArrowSize, 0) )
-          worldExpandShrinkVectors.append( (0, worldArrowSize) )
-          worldExpandShrinkVectors.append( (0, -worldArrowSize) )
-          worldExpandShrinkVectors.append( (dWorldArrowSize, dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (dWorldArrowSize, -dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (-dWorldArrowSize, dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (-dWorldArrowSize, -dWorldArrowSize) )
-
-          vectors = vtk.vtkDoubleArray()
-          vectors.SetNumberOfComponents(3)
-          vectors.SetNumberOfTuples(8)
-          for count in xrange(8):
-            v = worldExpandShrinkVectors[count]
-            vectors.SetTuple3(count, v[0], v[1], 0.0)
-
-          pd = vtk.vtkPolyData()
-          pd.SetPoints(pts)
-          pd.GetPointData().SetVectors(vectors)
-
-          lineSource = vtk.vtkArrowSource()
-
-          self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
-          self.movingArrowGlyph.ScalingOn()
-          self.movingArrowGlyph.OrientOn()
-          self.movingArrowGlyph.SetScaleFactor(1.0)
-          self.movingArrowGlyph.SetVectorModeToUseVector()
-          self.movingArrowGlyph.SetScaleModeToScaleByVector()
-          self.movingArrowGlyph.Update()
-      
-          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
-      
-          self.movingArrowActor.SetMapper(self.movingArrowMapper)
-
-          renOverlay = self.getOverlayRenderer(
-            style.GetInteractor().GetRenderWindow() )
-          renOverlay.AddActor(self.movingArrowActor)
-
-        elif self.actionState == "shrinkStart":
-
-          # Drawing lines for local shrinkage
-          cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
-          app.setOverrideCursor(cursor)
-
-          xy = style.GetInteractor().GetEventPosition()
-
-          coord = vtk.vtkCoordinate()
-          coord.SetCoordinateSystemToDisplay()
-
-          coord.SetValue(self.lineStartXY[0], self.lineStartXY[1], 0.0)
-          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          coord.SetValue(xy[0], xy[1], 0.0)
-          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          # TODO: click and hold mode? requires a timer for detection
-          #lineSize = (time.clock() - self.expandStartTime) * 0.1
-          lineSize = 0.0
-          for dim in xrange(2):
-            lineSize += (xy[dim] - self.lineStartXY[dim]) ** 2.0
-          lineSize = math.sqrt(lineSize)
-          dArrowSize = 0.7 * lineSize
-
-          worldArrowSize = 0.0
-          for dim in xrange(3):
-            worldArrowSize += (worldXY[dim] - worldStartXY[dim]) ** 2.0
-          worldArrowSize = math.sqrt(worldArrowSize)
-          dWorldArrowSize = 0.7*worldArrowSize
-
-          self.expandShrinkVectors = []
-          self.expandShrinkVectors.append( (lineSize, 0) )
-          self.expandShrinkVectors.append( (-lineSize, 0) )
-          self.expandShrinkVectors.append( (0, lineSize) )
-          self.expandShrinkVectors.append( (0, -lineSize) )
-          self.expandShrinkVectors.append( (dArrowSize, dArrowSize) )
-          self.expandShrinkVectors.append( (dArrowSize, -dArrowSize) )
-          self.expandShrinkVectors.append( (-dArrowSize, dArrowSize) )
-          self.expandShrinkVectors.append( (-dArrowSize, -dArrowSize) )
-
-          wa = worldStartXY
-
-          pts = vtk.vtkPoints()
-          pts.InsertNextPoint(wa[0]+worldArrowSize, wa[1], wa[2])
-          pts.InsertNextPoint(wa[0]-worldArrowSize, wa[1], wa[2])
-          pts.InsertNextPoint(wa[0], wa[1]+worldArrowSize, wa[2])
-          pts.InsertNextPoint(wa[0], wa[1]-worldArrowSize, wa[2])
-          pts.InsertNextPoint(wa[0]+dWorldArrowSize, wa[1]+dWorldArrowSize, wa[2])
-          pts.InsertNextPoint(wa[0]+dWorldArrowSize, wa[1]-dWorldArrowSize, wa[2])
-          pts.InsertNextPoint(wa[0]-dWorldArrowSize, wa[1]+dWorldArrowSize, wa[2])
-          pts.InsertNextPoint(wa[0]-dWorldArrowSize, wa[1]-dWorldArrowSize, wa[2])
-
-          worldExpandShrinkVectors = []
-          worldExpandShrinkVectors.append( (-worldArrowSize, 0) )
-          worldExpandShrinkVectors.append( (worldArrowSize, 0) )
-          worldExpandShrinkVectors.append( (0, -worldArrowSize) )
-          worldExpandShrinkVectors.append( (0, worldArrowSize) )
-          worldExpandShrinkVectors.append( (-dWorldArrowSize, -dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (-dWorldArrowSize, dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (dWorldArrowSize, -dWorldArrowSize) )
-          worldExpandShrinkVectors.append( (dWorldArrowSize, dWorldArrowSize) )
-
-          vectors = vtk.vtkDoubleArray()
-          vectors.SetNumberOfComponents(3)
-          vectors.SetNumberOfTuples(8)
-          for count in xrange(8):
-            v = worldExpandShrinkVectors[count]
-            vectors.SetTuple3(count, v[0], v[1], 0.0)
-
-          pd = vtk.vtkPolyData()
-          pd.SetPoints(pts)
-          pd.GetPointData().SetVectors(vectors)
-
-          lineSource = vtk.vtkArrowSource()
-
-          self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
-          self.movingArrowGlyph.ScalingOn()
-          self.movingArrowGlyph.OrientOn()
-          self.movingArrowGlyph.SetScaleFactor(1.0)
-          self.movingArrowGlyph.SetVectorModeToUseVector()
-          self.movingArrowGlyph.SetScaleModeToScaleByVector()
-          self.movingArrowGlyph.Update()
-      
-          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
-      
-          self.movingArrowActor.SetMapper(self.movingArrowMapper)
-
-          renOverlay = self.getOverlayRenderer(
-            style.GetInteractor().GetRenderWindow() )
-          renOverlay.AddActor(self.movingArrowActor)
-          
         else:
           pass
         

@@ -47,6 +47,17 @@ class PolyAffineCL:
 
     self.convergenceRatio = 1e-4
 
+    # Optimizer state
+    self.optimIter = 0
+
+    self.stepA = 1.0
+    self.stepT = 1.0
+    self.stepC = 1.0
+
+    self.refErrorL2 = 0.0
+    self.currErrorL2 = 0.0
+    self.prevErrorL2 = 0.0
+
   def create_identity(self, number_per_axis=3):
     """Identity transform with equal number of affines at each axis"""
     self.centers = []
@@ -59,7 +70,7 @@ class PolyAffineCL:
 
     rad = numpy.ones((3,1), dtype=numpy.single)
     for d in range(3):
-      rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1)
+      rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1) * 1.25
 
     A0 = numpy.zeros((3,3), dtype=numpy.single)
     #A0 = numpy.eye(3, dtype=numpy.single)
@@ -90,13 +101,30 @@ class PolyAffineCL:
     self.affines.append(A)
     self.translations.append(T)
 
-  def optimize(self, maxIters=10):
-    """Optimize polyaffine parameters using adaptive step gradient descent"""
+  def optimize_setup(self):
+    """Optimization setup, needs to be called before iterative calls to
+    optimize_step."""
+    self.optimIter = 0
 
-    #TODO: separate one iteration as a method for feedback updates
-    # separate by params as well?
-    # Keep track of step sizes and iteration number
-    # method for init, if iter == 0 set up variables (ref error, steps, etc)
+    numTransforms = len(self.affines)
+
+    self.stepA = 1.0
+    self.stepT = 1.0
+    self.stepC = 1.0
+
+    self.prevErrorL2 = float('Inf')
+
+    DiffFM = self.fixedCL.subtract(self.movingCL)
+    DiffFMSq = DiffFM.multiply(DiffFM)
+    errorL2 = DiffFMSq.sum()
+
+    self.currErrorL2 = errorL2
+
+    self.refErrorL2 = errorL2
+    print "Ref diff", self.refErrorL2
+
+  def optimize_step(self):
+    """Gradient descent update step, NOT thread safe."""
 
     AList = self.affines
     TList = self.translations
@@ -105,165 +133,158 @@ class PolyAffineCL:
 
     numTransforms = len(AList)
 
-    stepA = 1.0
-    stepT = 1.0
-    stepC = 1.0
-
-    prevErrorL2 = float('Inf')
-
-    DiffFM = self.fixedCL.subtract(self.movingCL)
-    DiffFMSq = DiffFM.multiply(DiffFM)
-    errorL2 = DiffFMSq.sum()
-
-    refErrorL2 = errorL2
-    print "Ref diff", refErrorL2
+    self.prevErrorL2 = self.currErrorL2
 
     # Alternating gradient descent with adaptive step sizes
+
+    # Translation
+    dTList = self.gradient_translation()
+
+    if self.optimIter == 0:
+      max_dT = 1e-10
+      for q in range(numTransforms):
+        max_dT = max(numpy.max(numpy.abs(dTList[q])), max_dT)
+      self.stepT = 2.0 / max_dT
+
+    print "Line search trans"
+    for lineIter in range(20):
+      print "opt line iter", lineIter
+
+      TTestList = list(TList)
+      for q in range(numTransforms):
+        TTestList[q] = TList[q] - dTList[q]*self.stepT
+
+      M = self.warp(self.origMovingCL, self.affines, TTestList, self.centers)
+
+      DiffFM = self.fixedCL.subtract(M)
+      DiffFMSq = DiffFM.multiply(DiffFM)
+      errorL2Test = DiffFMSq.sum()
+
+      print "Test diff", errorL2Test
+
+      if errorL2Test < self.currErrorL2:
+        TList = TTestList
+
+        # TODO: figure out book-keeping, shouldn't have duplicates like this
+        # gradient and warp should be aware of which to use
+        self.translations = TList
+
+        self.stepT *= 1.2
+
+        self.currErrorL2 = errorL2Test
+
+        self.movingCL = M
+
+        print "PolyAffine error=", self.currErrorL2
+
+        break
+      else:
+        self.stepT *= 0.5
+
+    # Affine
+    dAList = self.gradient_affine()
+
+    if self.optimIter == 0:
+      max_dA = 1e-10
+      for q in range(numTransforms):
+        max_dA = max(numpy.max(numpy.abs(dAList[q])), max_dA)
+      self.stepA = 0.2 / max_dA
+
+    print "Line search affine"
+    for lineIter in range(20):
+      print "opt line iter", lineIter
+
+      ATestList = list(AList)
+      for q in range(numTransforms):
+        ATestList[q] = AList[q] - dAList[q]*self.stepA
+
+      M = self.warp(self.origMovingCL, ATestList, self.translations, self.centers)
+
+      DiffFM = self.fixedCL.subtract(M)
+      DiffFMSq = DiffFM.multiply(DiffFM)
+      errorL2Test = DiffFMSq.sum()
+
+      print "Test diff", errorL2Test
+
+      if errorL2Test < self.currErrorL2:
+        AList = ATestList
+
+        # TODO: figure out book-keeping, shouldn't have duplicates like this
+          # gradient and warp should be aware of which to use
+        self.affines = AList
+
+        self.stepA *= 1.2
+
+        self.currErrorL2 = errorL2Test
+
+        self.movingCL = M
+
+        print "PolyAffine error=", self.currErrorL2
+
+        break
+      else:
+        self.stepA *= 0.5
+
+    # Anchor positions
+    dCList = self.gradient_anchor()
+
+    if self.optimIter == 0:
+      max_dC = 1e-10
+      for q in range(numTransforms):
+        max_dC = max(numpy.max(numpy.abs(dCList[q])), max_dC)
+      self.stepC = 2.0 / max_dC
+
+    print "Line search anchor"
+    for lineIter in range(20):
+      print "opt line iter", lineIter
+
+      CTestList = list(CList)
+      for q in range(numTransforms):
+        CTestList[q] = CList[q] - dCList[q]*self.stepC
+
+      M = self.warp(self.origMovingCL, self.affines, self.translations, CTestList)
+
+      DiffFM = self.fixedCL.subtract(M)
+      DiffFMSq = DiffFM.multiply(DiffFM)
+      errorL2Test = DiffFMSq.sum()
+
+      print "Test diff", errorL2Test
+
+      if errorL2Test < self.currErrorL2:
+        CList = CTestList
+
+        # TODO: figure out book-keeping, shouldn't have duplicates like this
+        # gradient and warp should be aware of which to use
+        self.centers = CTestList
+
+        self.stepC *= 1.2
+
+        self.currErrorL2 = errorL2Test
+
+        self.movingCL = M
+
+        print "PolyAffine error=", self.currErrorL2
+
+        break
+      else:
+        self.stepC *= 0.5
+
+    self.optimIter += 1
+
+
+  def optimize(self, maxIters=10):
+    """Offline optimization of polyaffine parameters using adaptive step
+    gradient descent."""
+
+    self.optimize_setup()
+
     for iter in range(maxIters):
+      self.optimize_step()
 
-      prevErrorL2 = errorL2
-
-      # Translation
-      dTList = self.gradient_translation()
-
-      if iter == 0:
-        max_dT = 1e-10
-        for q in range(numTransforms):
-          max_dT = max(numpy.max(numpy.abs(dTList[q])), max_dT)
-        stepT = 5.0 / max_dT
-
-      print "Line search trans"
-      for lineIter in range(20):
-        print "opt line iter", lineIter
-
-        TTestList = list(TList)
-        for q in range(numTransforms):
-          TTestList[q] = TList[q] - dTList[q]*stepT
-
-        M = self.warp(self.origMovingCL, self.affines, TTestList, self.centers)
-
-        DiffFM = self.fixedCL.subtract(M)
-        DiffFMSq = DiffFM.multiply(DiffFM)
-        errorL2Test = DiffFMSq.sum()
-
-        print "Test diff", errorL2Test
-
-        if errorL2Test < errorL2:
-          TList = TTestList
-
-          # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp should be aware of which to use
-          self.translations = TList
-
-          stepT *= 1.2
-
-          errorL2 = errorL2Test
-
-          self.movingCL = M
-
-          print "PolyAffine error=", errorL2
-
-          break
-        else:
-          stepT *= 0.5
-
-      # Affine
-      dAList = self.gradient_affine()
-
-      if iter == 0:
-        max_dA = 1e-10
-        for q in range(numTransforms):
-          max_dA = max(numpy.max(numpy.abs(dAList[q])), max_dA)
-        stepA = 0.1 / max_dA
-
-      print "Line search affine"
-      for lineIter in range(20):
-        print "opt line iter", lineIter
-
-        ATestList = list(AList)
-        for q in range(numTransforms):
-          ATestList[q] = AList[q] - dAList[q]*stepA
-
-        M = self.warp(self.origMovingCL, ATestList, self.translations, self.centers)
-
-        DiffFM = self.fixedCL.subtract(M)
-        DiffFMSq = DiffFM.multiply(DiffFM)
-        errorL2Test = DiffFMSq.sum()
-
-        print "Test diff", errorL2Test
-
-        if errorL2Test < errorL2:
-          AList = ATestList
-
-          # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp should be aware of which to use
-          self.affines = AList
-
-          stepA *= 1.2
-
-          errorL2 = errorL2Test
-
-          self.movingCL = M
-
-          print "PolyAffine error=", errorL2
-
-          break
-        else:
-          stepA *= 0.5
-
-
-      # Anchor positions
-      dCList = self.gradient_anchor()
-
-      if iter == 0:
-        max_dC = 1e-10
-        for q in range(numTransforms):
-          max_dC = max(numpy.max(numpy.abs(dCList[q])), max_dC)
-        stepC = 5.0 / max_dC
-
-      print "Line search anchor"
-      for lineIter in range(20):
-        print "opt line iter", lineIter
-
-        CTestList = list(CList)
-        for q in range(numTransforms):
-          CTestList[q] = CList[q] - dCList[q]*stepC
-
-        M = self.warp(self.origMovingCL, self.affines, self.translations, CTestList)
-
-        DiffFM = self.fixedCL.subtract(M)
-        DiffFMSq = DiffFM.multiply(DiffFM)
-        errorL2Test = DiffFMSq.sum()
-
-        print "Test diff", errorL2Test
-
-        if errorL2Test < errorL2:
-          CList = CTestList
-
-          # TODO: figure out book-keeping, shouldn't have duplicates like this
-          # gradient and warp should be aware of which to use
-          self.centers = CTestList
-
-          stepC *= 1.2
-
-          errorL2 = errorL2Test
-
-          self.movingCL = M
-
-          print "PolyAffine error=", errorL2
-
-          break
-        else:
-          stepC *= 0.5
-
-      if abs(errorL2 - prevErrorL2) < self.convergenceRatio * abs(errorL2 - refErrorL2):
+      if abs(self.currErrorL2 - self.prevErrorL2) < self.convergenceRatio * abs(self.currErrorL2 - self.refErrorL2):
         break
 
-      print "opt iter", iter, "steps", stepA, stepT, stepC
-
-    self.affines = AList
-    self.translations = TList
-    self.centers = CList
+      print "opt iter", iter, "steps", self.stepA, self.stepT, self.stepC
 
   def gradient(self):
     """Gradient of L2 norm"""

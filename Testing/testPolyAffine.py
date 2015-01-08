@@ -35,7 +35,7 @@ movingCL = ImageCL(preferredDeviceType)
 movingCL.fromArray(movingArray, fixedImage.GetOrigin(), fixedImage.GetSpacing())
 
 polyAffine = PolyAffineCL(fixedCL, movingCL)
-polyAffine.create_identity(4)
+polyAffine.create_identity(5)
 polyAffine.optimize(20)
 
 warpedCL = polyAffine.movingCL
