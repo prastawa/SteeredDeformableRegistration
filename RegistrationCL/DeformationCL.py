@@ -53,11 +53,10 @@ class DeformationCL:
 
   def set_identity(self):
 
-    clsize = self.hx.clsize
     clspacing = self.hx.clspacing
 
     self.clprogram.identity(self.clqueue, self.hx.shape, None,
-      clsize.data, clspacing.data,
+      clspacing.data,
       self.hx.clarray.data,  self.hy.clarray.data, self.hz.clarray.data).wait()
 
   def add_velocity(self, velocList):
@@ -88,12 +87,11 @@ class DeformationCL:
     # Output image is in the same grid as h
     outimgcl = self.hx.clone()
 
-    self.clprogram.interpolate(vol.clqueue, self.hx.shape, None,
+    outimgcl.clprogram.interpolate(outimgcl.clqueue, self.hx.shape, None,
       vol.clarray.data,
       vol.clsize.data, vol.clspacing.data,
       self.hx.clarray.data, self.hy.clarray.data, self.hz.clarray.data,
-      outimgcl.clarray.data,
-      outimgcl.clsize.data).wait()
+      outimgcl.clarray.data).wait()
 
     return outimgcl
 

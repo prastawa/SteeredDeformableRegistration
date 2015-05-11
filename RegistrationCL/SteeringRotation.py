@@ -69,7 +69,7 @@ class SteeringRotation(SteeringGeneric):
     Dnorm_ref = Dnorm
 
     R = np.identity(2, np.float32)
-    T = np.zeros((2,1), np.float32)
+    T = np.zeros((2,), np.float32)
 
     angle = 0
 
@@ -91,7 +91,7 @@ class SteeringRotation(SteeringGeneric):
       dRy = dR[1,0]*(x0-xc) + dR[1,1]*(y0-yc)
       dAngle = np.sum(G * D * (dRx*Mx + dRy*My))
 
-      dT = np.zeros((2,1), np.float32)
+      dT = np.zeros((2,), np.float32)
       dT[0] = np.sum(D * Mx)
       dT[1] = np.sum(D * My)
 

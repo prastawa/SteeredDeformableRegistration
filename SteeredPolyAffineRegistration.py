@@ -8,7 +8,7 @@ import time
 
 import cProfile, pstats, StringIO
 
-import numpy as n
+import numpy as np
 
 import pyopencl as cl
 import pyopencl.array as cla
@@ -240,7 +240,7 @@ class SteeredPolyAffineRegistrationWidget:
     self.numberAffinesSlider.decimals = 0
     self.numberAffinesSlider.singleStep = 1
     self.numberAffinesSlider.minimum = 1
-    self.numberAffinesSlider.maximum = 20
+    self.numberAffinesSlider.maximum = 8
     self.numberAffinesSlider.toolTip = "Number of affines in each dim"
     uiOptFormLayout.addRow("Number of affines per dim:", self.numberAffinesSlider)
 
@@ -358,8 +358,8 @@ class SteeredPolyAffineRegistrationWidget:
     # if(self.logic.transform is not None):
     #   self.logic.moving.SetAndObserveTransformNodeID(self.logic.transform.GetID())
     
-    self.logic.numberAffines = self.numberAfffinesSlider.value
-    self.logic.drawIterations = self.drawIterationSlider.value
+    self.logic.numberAffines = int(self.numberAffinesSlider.value)
+    self.logic.drawIterations = int(self.drawIterationSlider.value)
     self.logic.polyAffineRadius = self.polyAffineRadius.value
 
     self.logic.debugMessages = self.debugButton.checked
@@ -505,8 +505,8 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.timer = None
 
     # parameter defaults
-    self.numberAffines = 4
-    self.drawIterations = 2
+    self.numberAffines = 2
+    self.drawIterations = 1
     self.polyAffineRadius = 10.0
 
     # TODO
@@ -771,7 +771,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
     isCorrected = False
 
-    self.polyAffineCL.optimize_step()
+    self.polyAffine.optimize_step()
     
     if not self.actionQueue.empty():
       self.invoke_correction()
@@ -779,8 +779,8 @@ class SteeredPolyAffineRegistrationLogic(object):
 
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
-      #self.outputImageCL = self.polyAffineCL.applyTo(self.origMovingImageCL)
-      self.outputImageCL = self.polyAffineCL.movingImageCL
+      #self.outputImageCL = self.polyAffine.applyTo(self.origMovingImageCL)
+      self.outputImageCL = self.polyAffine.movingCL
 
       self.updateOutputVolume(self.outputImageCL)
       self.redrawSlices()
@@ -807,19 +807,35 @@ class SteeredPolyAffineRegistrationLogic(object):
     origin = movingVolume.GetOrigin()
     """
 
+    spacing = self.fixedImageCL.spacing
+
+    movingRAStoIJK = vtk.vtkMatrix4x4()
+    self.axialMovingVolume.GetRASToIJKMatrix(movingRAStoIJK)
+
     actionItem = self.actionQueue.get()
 
-    x = actionItem[3]
-    y = actionItem[5]
+    startRAS = actionItem[5]
+    endRAS = actionItem[6]
 
-    r = 1.5 * np.norm(x - y)
+    startIJK = movingRAStoIJK.MultiplyPoint(startRAS + (1,))
+    endIJK = movingRAStoIJK.MultiplyPoint(endRAS + (1,))
+
+    x = np.zeros((3,), np.float32)
+    y = np.zeros((3,), np.float32)
+
+    for d in range(3):
+      x[d] = startIJK[d] * spacing[d]
+      y[d] = endIJK[d] * spacing[d]
+
+    r = max(2.0, 1.5 * np.linalg.norm(x - y))
+    rvec = np.array((r, r, r))
 
     steerMode = actionItem[1]
 
     if steerMode == "rotate":
-      steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, r)
+      steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, rvec)
     elif steerMode == "scale":
-      steerer = SteeringScale(self.fixedImageCL, self.movingImageCL, x, r)
+      steerer = SteeringScale(self.fixedImageCL, self.movingImageCL, x, rvec)
     else:
       print "WARNING: unknown steering action"
       return
@@ -827,7 +843,7 @@ class SteeredPolyAffineRegistrationLogic(object):
     A, T = steerer.steer()
 
     # Append user defined affine to polyaffine
-    self.polyAffineCL.add_affine(A, T, x, r)
+    self.polyAffine.add_affine(A, T, x, rvec)
 
     # TODO: reinitialize optimizer? Fix user affine?
 
@@ -923,7 +939,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           self.actionQueue.put(
             (sliceNode.GetMTime(), self.steerMode, sliceWidget,
-             self.steerStartXY, self.steerEndXY
+             self.steerStartXY, self.steerEndXY,
              self.steerStartRAS, self.steerEndRAS) )
 
           renOverlay = self.getOverlayRenderer(
@@ -960,8 +976,10 @@ class SteeredPolyAffineRegistrationLogic(object):
             
         elif self.actionState == "steerStart":
 
+          #TODO: draw circle
+
           # Drawing a line that shows ROI
-          # TODO: add drawing of box
+          # TODO: add drawing of box on both fixed and moving views
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
@@ -1008,6 +1026,15 @@ class SteeredPolyAffineRegistrationLogic(object):
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
           renOverlay.AddActor(self.movingArrowActor)
+
+          # TODO
+          """
+          otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
+          otherSliceWidget = layoutManager.sliceWidget(otherSliceNode.GetLayoutName())
+          otherSliceView = otherSliceWidget.sliceView()
+          otherSliceStyle = otherSliceWidget.interactorStyle()
+          otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor2D(self.movingContourActor)
+          """
 
         else:
           pass
@@ -1059,9 +1086,17 @@ class SteeredPolyAffineRegistrationLogic(object):
           
         renwin.Render()
         
-    if not self.lineQueue.empty():
+    """
+    #TODO: draw circles indicating correction region
+    # maybe draw different icons for rotation / scale
+    if not self.actionQueue.empty():
     
-      numArrows = self.lineQueue.qsize()
+      numCircles = self.actionQueue.qsize()
+
+      # TODO:
+      # for i in range(numCircles):
+      #  actionTuple = self.actionQueue.queue[i]
+      # widget = actionTuple[2] # use renwin for that widget
 
       # TODO renwin = lineTuple[1], need to maintain actors for each renwin?
       renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
@@ -1131,6 +1166,7 @@ class SteeredPolyAffineRegistrationLogic(object):
       renOverlay.AddActor(self.linesActor)
 
       renwin.Render()
+    """
 
   def getOverlayRenderer(self, renwin):
     rencol = renwin.GetRenderers()

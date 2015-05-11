@@ -25,6 +25,8 @@
 from ImageCL import ImageCL
 from DeformationCL import DeformationCL
 
+import pyopencl.array as cla
+
 import numpy
 
 import random
@@ -68,13 +70,13 @@ class PolyAffineCL:
     shape = self.fixedCL.shape
     spacing = self.fixedCL.spacing
 
-    rad = numpy.ones((3,1), dtype=numpy.single)
+    rad = numpy.ones((3,), dtype=numpy.single)
     for d in range(3):
       rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1) * 1.25
 
     A0 = numpy.zeros((3,3), dtype=numpy.single)
     #A0 = numpy.eye(3, dtype=numpy.single)
-    T0 = numpy.zeros((3,1), dtype=numpy.single)
+    T0 = numpy.zeros((3,), dtype=numpy.single)
 
     for i in range(number_per_axis):
       cx = (i+1) * (shape[0]-1) * spacing[0] / (number_per_axis+1) + self.origin[0]
@@ -84,7 +86,6 @@ class PolyAffineCL:
           cz = (k+1) * (shape[2]-1) * spacing[2] / (number_per_axis+1) + self.origin[2]
 
           C = numpy.array([cx, cy, cz], dtype=numpy.single)
-          C = C.reshape(3, 1)
 
           #print "Adding affine at center", C, "radius", rad
 
@@ -345,12 +346,12 @@ class PolyAffineCL:
           GX = GList[i].multiply(XList[j])
           gradA[i,j] = -2.0 * WD.multiply(GX).sum()
 
-      gradT = numpy.zeros((3,1), dtype=numpy.single)
+      gradT = numpy.zeros((3,), dtype=numpy.single)
       for d in range(3):
         gradT[d] = -2.0 * WD.multiply(GList[d]).sum()
 
-      gradC = numpy.zeros((3,1), dtype=numpy.single)
-      gradR = numpy.zeros((3,1), dtype=numpy.single)
+      gradC = numpy.zeros((3,), dtype=numpy.single)
+      gradR = numpy.zeros((3,), dtype=numpy.single)
 
       dot_AT_XC = F.clone()
       dot_AT_XC.fill(0.0)
@@ -499,7 +500,7 @@ class PolyAffineCL:
 
       WD = W.multiply(DiffFM)
 
-      gradT = numpy.zeros((3,1), dtype=numpy.single)
+      gradT = numpy.zeros((3,), dtype=numpy.single)
       for d in range(3):
         gradT[d] = -2.0 * WD.multiply(GList[d]).sum()
 
@@ -556,7 +557,7 @@ class PolyAffineCL:
 
       WD = W.multiply(DiffFM)
 
-      gradC = numpy.zeros((3,1), dtype=numpy.single)
+      gradC = numpy.zeros((3,), dtype=numpy.single)
 
       dot_AT_XC = F.clone()
       dot_AT_XC.fill(0.0)
@@ -595,11 +596,40 @@ class PolyAffineCL:
     Returns warped version of origMovingCL with current poly-affine parameters.
     """
 
-    numTransforms = len(self.affines)
+    #numTransforms = len(self.affines)
+    numTransforms = len(AList)
 
     shape = self.fixedCL.shape
 
     # TODO: use applyPolyAffine kernel in ImageFunctions.cl
+
+    A = numpy.zeros((numTransforms, 3*3), numpy.single)
+    C = numpy.zeros((numTransforms, 3), numpy.single)
+    T = numpy.zeros((numTransforms, 3), numpy.single)
+    R = numpy.zeros((numTransforms, 3), numpy.single)
+
+    for i in range(numTransforms):
+      A[i,:] = AList[i].ravel()
+      C[i,:] = CList[i].ravel()
+      T[i,:] = TList[i] .ravel()
+      R[i,:] = self.radii[i].ravel()
+
+    clmatrices = cla.to_device(image.clqueue, A)
+    clcenters = cla.to_device(image.clqueue, C)
+    cltrans = cla.to_device(image.clqueue, T)
+    clradii = cla.to_device(image.clqueue, R)
+
+    clorigin = cla.to_device(image.clqueue, numpy.array(image.origin))
+
+    warpedImage = image.clone()
+
+    image.clprogram.applyPolyAffine(image.clqueue, image.shape, None,
+      clcenters.data, clradii.data, clmatrices.data, cltrans.data,
+      numpy.uint32(numTransforms),
+      image.clarray.data, image.clspacing.data, clorigin.data,
+      warpedImage.clarray.data)
+
+    return warpedImage
 
     """
     WSum = None
@@ -628,6 +658,9 @@ class PolyAffineCL:
       CoordCL.append(cc)
     """
 
+
+    """
+    # Slow version by creating dense deformation field
     Phi = DeformationCL(self.fixedCL)
     Phi.set_identity()
 
@@ -667,6 +700,7 @@ class PolyAffineCL:
     warpCL.set_mapping(CoordCL[0], CoordCL[1], CoordCL[2])
 
     return warpCL.applyTo(image)
+    """
 
   # TODO: switch to CL kernels that compute weights
   def _gaussian(self, shape, center, radii):

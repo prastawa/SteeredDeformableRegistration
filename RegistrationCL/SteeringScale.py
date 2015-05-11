@@ -34,6 +34,8 @@ class SteeringScale(SteeringGeneric):
     C = np.array([N[0]/2, N[1]/2, N[2]/2], np.single)
     T += C - np.dot(S,C)
 
+    T = np.single(T)
+
     # Subtract identitiy from matrix to match convention for PolyAffineCL
     for dim in range(3):
       S[dim, dim] -= 1.0
@@ -60,7 +62,7 @@ class SteeringScale(SteeringGeneric):
     Dnorm_ref = Dnorm
 
     I = np.identity(2, np.single)
-    T = np.zeros((2,1), np.single)
+    T = np.zeros((2,), np.single)
 
     scale = 1.0
 
@@ -79,7 +81,7 @@ class SteeringScale(SteeringGeneric):
 
       dScale = np.sum(D * (x0*Mx + y0*My))
 
-      dT = np.zeros((2,1), np.single)
+      dT = np.zeros((2,), np.single)
       dT[0] = np.sum(D * Mx)
       dT[1] = np.sum(D * My)
 

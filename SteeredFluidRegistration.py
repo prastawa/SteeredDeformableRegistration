@@ -1041,7 +1041,7 @@ class SteeredFluidRegistrationLogic(object):
         startIJK[dim] *= self.ratios_down[dim]
         endIJK[dim] *= self.ratios_down[dim]
 
-      # TODO: use RAS (with origin and orient)
+      # TODO: use RAS (with origin and orient)?
 
       sigma = 0.0
       forceMag = 0.0

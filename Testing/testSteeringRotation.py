@@ -161,7 +161,7 @@ movingCL = ImageCL(preferredDeviceType)
 movingCL.fromArray(moving_image_array)
 
 center = np.array([cx, cy, cz], np.float32)
-radius = np.array(N, np.float32) / 2
+radius = np.array(N, np.float32) / 4
 
 rotsteer = SteeringRotation(fixedCL, movingCL, center, radius)
 

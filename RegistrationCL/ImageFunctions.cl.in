@@ -3,6 +3,11 @@
 // How to store orientation matrix? pass it through device array? or pass it
 // through #def constants? more recompilations? is this OK?
 
+#define SLICES %(slices)d
+#define ROWS %(rows)d
+#define COLUMNS %(columns)d
+
+
 #define NUM_GAUSSIAN_STEPS 4
 
 //
@@ -12,7 +17,6 @@
 // Use float array to store var and width due to PyOpenCL issue (???)
 __kernel void gaussian_x(
   __global float* src,
-  __global uint* size,
   float var, int width,
   __global float* dst)
 {
@@ -20,19 +24,19 @@ __kernel void gaussian_x(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   size_t kernelSize = convert_uint(width);
   size_t halfKernelSize = kernelSize / 2;
 
   size_t slice0 = slice - halfKernelSize;
-  if (slice0 >= size[0]) slice0 = 0;
+  if (slice0 >= SLICES) slice0 = 0;
 
   size_t slice1 = slice + halfKernelSize;
-  if (slice1 >= size[0]) slice1 = size[0] - 1;
+  if (slice1 >= SLICES) slice1 = SLICES - 1;
 
   float fslice = convert_float(slice);
 
@@ -44,7 +48,7 @@ __kernel void gaussian_x(
     float d = convert_float(pslice) - fslice;
     float g = exp(-0.5 * d*d / var);
 
-    size_t n_offset = pslice*size[1]*size[2] + row*size[2] + column;
+    size_t n_offset = pslice*ROWS*COLUMNS + row*COLUMNS + column;
     wv += src[n_offset] * g;
 
     n_weight += g;
@@ -58,7 +62,6 @@ __kernel void gaussian_x(
 
 __kernel void gaussian_y(
   __global float* src,
-  __global uint* size,
   float var, int width,
   __global float* dst)
 {
@@ -66,19 +69,19 @@ __kernel void gaussian_y(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   size_t kernelSize = convert_uint(width);
   size_t halfKernelSize = kernelSize / 2;
 
   size_t row0 = row - halfKernelSize;
-  if (row0 >= size[1]) row0 = 0;
+  if (row0 >= ROWS) row0 = 0;
 
   size_t row1 = row + halfKernelSize;
-  if (row1 >= size[1]) row1 = size[1] - 1;
+  if (row1 >= ROWS) row1 = ROWS - 1;
 
   float frow = convert_float(row);
 
@@ -90,7 +93,7 @@ __kernel void gaussian_y(
     float d = convert_float(prow) - frow;
     float g = exp(-0.5 * d*d / var);
 
-    size_t n_offset = slice*size[1]*size[2] + prow*size[2] + column;
+    size_t n_offset = slice*ROWS*COLUMNS + prow*COLUMNS + column;
     wv += src[n_offset] * g;
 
     n_weight += g;
@@ -104,7 +107,6 @@ __kernel void gaussian_y(
 
 __kernel void gaussian_z(
   __global float* src,
-  __global uint* size,
   float var, int width,
   __global float* dst)
 {
@@ -112,19 +114,19 @@ __kernel void gaussian_z(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   size_t kernelSize = convert_uint(width);
   size_t halfKernelSize = kernelSize / 2;
 
   size_t column0 = column - halfKernelSize;
-  if (column0 >= size[2]) column0 = 0;
+  if (column0 >= COLUMNS) column0 = 0;
 
   size_t column1 = column + halfKernelSize;
-  if (column1 >= size[2]) column1 = size[2] - 1;
+  if (column1 >= COLUMNS) column1 = COLUMNS - 1;
 
   float fcolumn = convert_float(column);
 
@@ -136,7 +138,7 @@ __kernel void gaussian_z(
     float d = convert_float(pcolumn) - fcolumn;
     float g = exp(-0.5 * d*d / var);
 
-    size_t n_offset = slice*size[1]*size[2] + row*size[2] + pcolumn;
+    size_t n_offset = slice*ROWS*COLUMNS + row*COLUMNS + pcolumn;
     wv += src[n_offset] * g;
 
     n_weight += g;
@@ -151,17 +153,16 @@ __kernel void gaussian_z(
 // Gaussian filtering in x direction, in-place, sigma in voxels
 __kernel void recursive_gaussian_x(
   __global float* img,
-  __global uint* size,
   float sigma)
 {
   size_t column = get_global_id(1);
   size_t row = get_global_id(0);
 
-  if (row >= size[1] || column >= size[2])
+  if (row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t sliceStart = row*size[2] + column;
-  size_t sliceEnd = (size[0]-1)*size[1]*size[2] + row*size[2] + column;
+  size_t sliceStart = row*COLUMNS + column;
+  size_t sliceEnd = (SLICES-1)*ROWS*COLUMNS + row*COLUMNS + column;
 
   // NOTE: assume this is done outside
   //float ssigma = sigma / spacing[0];
@@ -175,28 +176,28 @@ __kernel void recursive_gaussian_x(
   {
     img[sliceStart] *= boundary;
 
-    for (size_t slice = 1; slice < size[0]; slice++)
+    for (size_t slice = 1; slice < SLICES; slice++)
     {
-      size_t pos = slice*size[1]*size[2] + sliceStart;
-      size_t pos_prev = (slice-1)*size[1]*size[2] + sliceStart;
+      size_t pos = slice*ROWS*COLUMNS + sliceStart;
+      size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
       img[pos] += img[pos_prev] * nu;
     }
 
     img[sliceEnd] *= boundary;
 
-    for (size_t slice = (size[0]-1); slice > 0; slice--)
+    for (size_t slice = (SLICES-1); slice > 0; slice--)
     {
-      size_t pos = slice*size[1]*size[2] + sliceStart;
-      size_t pos_prev = (slice-1)*size[1]*size[2] + sliceStart;
+      size_t pos = slice*ROWS*COLUMNS + sliceStart;
+      size_t pos_prev = (slice-1)*ROWS*COLUMNS + sliceStart;
       img[pos_prev] += img[pos] * nu;
     }
   }
 
   // NOTE: do this outside to get full 3D parallelization
   // Ignore since scaling is not important?
-  for (size_t slice = 0; slice < size[0]; slice++)
+  for (size_t slice = 0; slice < SLICES; slice++)
   {
-    size_t pos = slice*size[1]*size[2] + sliceStart;
+    size_t pos = slice*ROWS*COLUMNS + sliceStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
@@ -204,20 +205,19 @@ __kernel void recursive_gaussian_x(
 // Gaussian filtering in y direction, in-place
 __kernel void recursive_gaussian_y(
   __global float* img,
-  __global uint* size,
   float sigma)
 {
   size_t column = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || column >= size[2])
+  if (slice >= SLICES || column >= COLUMNS)
     return;
 
   // NOTE: assume this is done outside
   //float ssigma = sigma / spacing[1];
 
-  size_t rowStart = slice*size[1]*size[2] + column;
-  size_t rowEnd = slice*size[1]*size[2] + (size[1]-1)*size[2] + column;
+  size_t rowStart = slice*ROWS*COLUMNS + column;
+  size_t rowEnd = slice*ROWS*COLUMNS + (ROWS-1)*COLUMNS + column;
 
   float lambda = (sigma*sigma) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
   float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
@@ -228,27 +228,27 @@ __kernel void recursive_gaussian_y(
   {
     img[rowStart] *= boundary;
 
-    for (size_t row = 1; row < size[1]; row++)
+    for (size_t row = 1; row < ROWS; row++)
     {
-      size_t pos = row*size[2] + rowStart;
-      size_t pos_prev = (row-1)*size[2] + rowStart;
+      size_t pos = row*COLUMNS + rowStart;
+      size_t pos_prev = (row-1)*COLUMNS + rowStart;
       img[pos] += img[pos_prev] * nu;
     }
 
     img[rowEnd] *= boundary;
 
-    for (size_t row = (size[1]-1); row > 0; row--)
+    for (size_t row = (ROWS-1); row > 0; row--)
     {
-      size_t pos = row*size[2] + rowStart;
-      size_t pos_prev = (row-1)*size[2] + rowStart;
+      size_t pos = row*COLUMNS + rowStart;
+      size_t pos_prev = (row-1)*COLUMNS + rowStart;
       img[pos_prev] += img[pos] * nu;
     }
   }
 
   // NOTE: do this outside to get full 3D parallelization
-  for (size_t row = 0; row < size[1]; row++)
+  for (size_t row = 0; row < ROWS; row++)
   {
-    size_t pos = row*size[2] + rowStart;
+    size_t pos = row*COLUMNS + rowStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
@@ -256,17 +256,16 @@ __kernel void recursive_gaussian_y(
 // Gaussian filtering in z direction, in-place
 __kernel void recursive_gaussian_z(
   __global float* img,
-  __global uint* size,
   float sigma)
 {
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1])
+  if (slice >= SLICES || row >= ROWS)
     return;
 
-  size_t columnStart = slice*size[1]*size[2] + row*size[2];
-  size_t columnEnd = slice*size[1]*size[2] + row*size[2] + size[2]-1;
+  size_t columnStart = slice*ROWS*COLUMNS + row*COLUMNS;
+  size_t columnEnd = slice*ROWS*COLUMNS + row*COLUMNS + COLUMNS-1;
 
   float lambda = (sigma*sigma) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
   float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
@@ -277,7 +276,7 @@ __kernel void recursive_gaussian_z(
   {
     img[columnStart] *= boundary;
 
-    for (size_t column = 1; column < size[2]; column++)
+    for (size_t column = 1; column < COLUMNS; column++)
     {
       size_t pos = column + columnStart;
       size_t pos_prev = (column-1) + columnStart;
@@ -286,7 +285,7 @@ __kernel void recursive_gaussian_z(
 
     img[columnEnd] *= boundary;
 
-    for (size_t column = (size[2]-1); column > 0; column--)
+    for (size_t column = (COLUMNS-1); column > 0; column--)
     {
       size_t pos = column + columnStart;
       size_t pos_prev = (column-1) + columnStart;
@@ -295,7 +294,7 @@ __kernel void recursive_gaussian_z(
   }
 
   // NOTE: do this outside to get full 3D parallelization
-  for (size_t column = 0; column < size[2]; column++)
+  for (size_t column = 0; column < COLUMNS; column++)
   {
     size_t pos = column + columnStart;
     img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
@@ -308,7 +307,6 @@ __kernel void recursive_gaussian_z(
 
 __kernel void gradient(
   __global float* src,
-  __global uint* size,
   __global float* spacing,
   __global float* dst_x,
   __global float* dst_y,
@@ -318,7 +316,7 @@ __kernel void gradient(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
   size_t slice_a = slice - 1;
@@ -328,21 +326,21 @@ __kernel void gradient(
   size_t column_a = column - 1;
   size_t column_b = column + 1;
 
-  if (slice_a >= size[0]) slice_a = 0;
-  if (slice_b >= size[0]) slice_b = size[0] - 1;
-  if (row_a >= size[1]) row_a = 0;
-  if (row_b >= size[1]) row_b = size[1] - 1;
-  if (column_a >= size[2]) column_a = 0;
-  if (column_b >= size[2]) column_b = size[2] - 1;
+  if (slice_a >= SLICES) slice_a = 0;
+  if (slice_b >= SLICES) slice_b = SLICES - 1;
+  if (row_a >= ROWS) row_a = 0;
+  if (row_b >= ROWS) row_b = ROWS - 1;
+  if (column_a >= COLUMNS) column_a = 0;
+  if (column_b >= COLUMNS) column_b = COLUMNS - 1;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
-  size_t offset_a_x = slice_a*size[1]*size[2] + row*size[2] + column;
-  size_t offset_b_x = slice_b*size[1]*size[2] + row*size[2] + column;
-  size_t offset_a_y = slice*size[1]*size[2] + row_a*size[2] + column;
-  size_t offset_b_y = slice*size[1]*size[2] + row_b*size[2] + column;
-  size_t offset_a_z = slice*size[1]*size[2] + row*size[2] + column_a;
-  size_t offset_b_z = slice*size[1]*size[2] + row*size[2] + column_b;
+  size_t offset_a_x = slice_a*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_b_x = slice_b*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_a_y = slice*ROWS*COLUMNS + row_a*COLUMNS + column;
+  size_t offset_b_y = slice*ROWS*COLUMNS + row_b*COLUMNS + column;
+  size_t offset_a_z = slice*ROWS*COLUMNS + row*COLUMNS + column_a;
+  size_t offset_b_z = slice*ROWS*COLUMNS + row*COLUMNS + column_b;
 
   dst_x[offset] = 0.5 * (src[offset_b_x] - src[offset_a_x]) / spacing[0];
   dst_y[offset] = 0.5 * (src[offset_b_y] - src[offset_a_y]) / spacing[1];
@@ -360,29 +358,28 @@ __kernel void interpolate(
   __global float* hx,
   __global float* hy,
   __global float* hz,
-  __global float* dst,
-  __global uint* dstsize)
+  __global float* dst)
 {
 /*
   size_t column = get_global_id(2);
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= dstsize[0] || row >= dstsize[1] || column >= dstsize[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t dstpos = slice*dstsize[1]*dstsize[2] + row*dstsize[2] + column;
+  size_t dstpos = slice*ROWS*COLUMNS + row*COLUMNS + column;
 */
 
   size_t ix = get_global_id(0);
   size_t iy = get_global_id(1);
   size_t iz = get_global_id(2);
 
-  if (ix >= dstsize[0] || iy >= dstsize[1] || iz >= dstsize[2])
+  if (ix >= SLICES || iy >= ROWS || iz >= COLUMNS)
     return;
 
-  //size_t dstpos = iz*dstsize[0]*dstsize[1] + iy*dstsize[0] + ix;
-  size_t dstpos = ix*dstsize[1]*dstsize[2] + iy*dstsize[2] + iz;
+  //size_t dstpos = iz*SLICES*ROWS + iy*SLICES + ix;
+  size_t dstpos = ix*ROWS*COLUMNS + iy*COLUMNS + iz;
 
   // Assume axial with zero origin for now
   float x = hx[dstpos] / srcspacing[0];
@@ -454,7 +451,6 @@ __kernel void interpolate(
 //
 
 __kernel void identity(
-  __global uint* size,
   __global float* spacing,
   __global float* hx,
   __global float* hy,
@@ -465,10 +461,10 @@ __kernel void identity(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   // TODO: use image spacing and origin
   // orient? assume already axial
@@ -484,11 +480,11 @@ __kernel void identity(
   size_t iy = get_global_id(1);
   size_t iz = get_global_id(2);
 
-  if (ix >= size[0] || iy >= size[1] || iz >= size[2])
+  if (ix >= SLICES || iy >= ROWS || iz >= COLUMNS)
     return;
 
-  //size_t offset = iz*size[0]*size[1] + iy*size[0] + ix;
-  size_t offset = ix*size[1]*size[2] + iy*size[2] + iz;
+  //size_t offset = iz*SLICES*ROWS + iy*SLICES + ix;
+  size_t offset = ix*ROWS*COLUMNS + iy*COLUMNS + iz;
 
   // TODO: use image spacing and origin
   // orient? assume already axial
@@ -515,17 +511,16 @@ __kernel void add_splat3(
   __global float* outx,
   __global float* outy,
   __global float* outz,
-  __global uint* size,
   __global float* spacing)
 {
   size_t column = get_global_id(2);
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   float x = convert_float(slice) * spacing[0];
   float y = convert_float(row) * spacing[1];
@@ -562,7 +557,7 @@ __kernel void add_splat3(
 __kernel void weightsPolyAffine(
   __global float* center,
   __global float* width,
-  __global uint* size, __global float* spacing, __global float* origin,
+  __global float* spacing, __global float* origin,
   __global float* dst)
 {
   // Computes the Gaussian weight for an ROI given the anchor point, width, and
@@ -572,10 +567,10 @@ __kernel void weightsPolyAffine(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   float p[3];
   p[0] = convert_float(slice) * spacing[0] + origin[0];
@@ -604,7 +599,7 @@ __kernel void applyPolyAffine(
   __global float* translations,
   uint numAffines,
   __global float* src,
-  __global uint* size, __global float* spacing, __global float* origin,
+  __global float* spacing, __global float* origin,
   __global float* dst)
 {
   // Apply poly affine transform to image region described by 
@@ -614,10 +609,10 @@ __kernel void applyPolyAffine(
   size_t row = get_global_id(1);
   size_t slice = get_global_id(0);
 
-  if (slice >= size[0] || row >= size[1] || column >= size[2])
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
     return;
 
-  size_t offset = slice*size[1]*size[2] + row*size[2] + column;
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
 
   float p[3];
   p[0] = convert_float(slice) * spacing[0] + origin[0];
@@ -654,9 +649,12 @@ __kernel void applyPolyAffine(
       tp[dim] += w * translations[i*3 + dim];
   }
 
-  float x = tp[0] / sumw / spacing[0];
-  float y = tp[1] / sumw / spacing[1];
-  float z = tp[2] / sumw / spacing[2];
+  //float x = tp[0] / sumw / spacing[0];
+  //float y = tp[1] / sumw / spacing[1];
+  //float z = tp[2] / sumw / spacing[2];
+  float x = tp[0] / spacing[0];
+  float y = tp[1] / spacing[1];
+  float z = tp[2] / spacing[2];
 
   int x0 = convert_int(x);
   int y0 = convert_int(y);
@@ -665,9 +663,9 @@ __kernel void applyPolyAffine(
   if (x0 < 0) x0 = 0;
   if (y0 < 0) y0 = 0;
   if (z0 < 0) z0 = 0;
-  if (x0 >= size[0]) x0 = size[0]-1;
-  if (y0 >= size[1]) y0 = size[1]-1;
-  if (z0 >= size[2]) z0 = size[2]-1;
+  if (x0 >= SLICES) x0 = SLICES-1;
+  if (y0 >= ROWS) y0 = ROWS-1;
+  if (z0 >= COLUMNS) z0 = COLUMNS-1;
 
   int x1 = x0 + 1;
   int y1 = y0 + 1;
@@ -676,9 +674,9 @@ __kernel void applyPolyAffine(
   if (x1 < 0) x1 = 0;
   if (y1 < 0) y1 = 0;
   if (z1 < 0) z1 = 0;
-  if (x1 >= size[0]) x1 = size[0]-1;
-  if (y1 >= size[1]) y1 = size[1]-1;
-  if (z1 >= size[2]) z1 = size[2]-1;
+  if (x1 >= SLICES) x1 = SLICES-1;
+  if (y1 >= ROWS) y1 = ROWS-1;
+  if (z1 >= COLUMNS) z1 = COLUMNS-1;
 
   float fx1 = x - floor(x);
   float fy1 = y - floor(y);
@@ -688,14 +686,14 @@ __kernel void applyPolyAffine(
   float fy0 = 1.0 - fy1;
   float fz0 = 1.0 - fz1;
 
-  float pix000 = src[x0*size[1]*size[2] + y0*size[2] + z0];
-  float pix001 = src[x0*size[1]*size[2] + y0*size[2] + z1];
-  float pix010 = src[x0*size[1]*size[2] + y1*size[2] + z0];
-  float pix011 = src[x0*size[1]*size[2] + y1*size[2] + z1];
-  float pix100 = src[x1*size[1]*size[2] + y0*size[2] + z0];
-  float pix101 = src[x1*size[1]*size[2] + y0*size[2] + z1];
-  float pix110 = src[x1*size[1]*size[2] + y1*size[2] + z0];
-  float pix111 = src[x1*size[1]*size[2] + y1*size[2] + z1];
+  float pix000 = src[x0*ROWS*COLUMNS + y0*COLUMNS + z0];
+  float pix001 = src[x0*ROWS*COLUMNS + y0*COLUMNS + z1];
+  float pix010 = src[x0*ROWS*COLUMNS + y1*COLUMNS + z0];
+  float pix011 = src[x0*ROWS*COLUMNS + y1*COLUMNS + z1];
+  float pix100 = src[x1*ROWS*COLUMNS + y0*COLUMNS + z0];
+  float pix101 = src[x1*ROWS*COLUMNS + y0*COLUMNS + z1];
+  float pix110 = src[x1*ROWS*COLUMNS + y1*COLUMNS + z0];
+  float pix111 = src[x1*ROWS*COLUMNS + y1*COLUMNS + z1];
 
   dst[offset] =
     fx0*fy0*fz0*pix000

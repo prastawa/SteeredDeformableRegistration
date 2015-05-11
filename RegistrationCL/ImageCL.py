@@ -22,73 +22,11 @@ import os
 
 class ImageCL:
 
-  clcontext_CPU = None
-  clqueue_CPU = None
-  clprogram_CPU = None
+  clSetupCache = { }
 
-  clcontext_GPU = None
-  clqueue_GPU = None
-  clprogram_GPU = None
-
-  @staticmethod
-  def setup_device(preferredDeviceType):
-    # Create cl context and queue
-    clcontext = None
-    for platform in cl.get_platforms():
-      for device in platform.get_devices():
-        if cl.device_type.to_string(device.type) == preferredDeviceType:
-          clcontext = cl.Context([device])
-          print ("Setting up CL device: %s" % cl.device_type.to_string(
-            device.type))
-          break;
-    if clcontext is None:
-      clcontext = cl.create_some_context()
-
-    clqueue = cl.CommandQueue(clcontext)
-
-    # Print CL device info
-    device = clcontext.devices[0]
-    print("Device name:", device.name)
-    print("Device type:", cl.device_type.to_string(device.type))
-    print("Device memory: ", device.global_mem_size//1024//1024, 'MB')
-    print("Device max clock speed:", device.max_clock_frequency, 'MHz')
-    print("Device compute units:", device.max_compute_units)
-
-    # Compile OpenCL code and create program object
-    sourcePath = os.path.dirname( os.path.realpath(__file__) )
-    clFileName = os.path.join(sourcePath, "ImageFunctions.cl")
-
-    fp = open(clFileName)
-    source = fp.read()
-    fp.close()
-
-    clprogram = cl.Program(clcontext, source).build()
-
-    return clcontext, clqueue, clprogram
-
-  @staticmethod
-  def setup():
-    if ImageCL.clcontext_GPU is None:
-      ImageCL.clcontext_GPU, ImageCL.clqueue_GPU, ImageCL.clprogram_GPU = \
-        ImageCL.setup_device("GPU")
-    if ImageCL.clcontext_CPU is None:
-      ImageCL.clcontext_CPU, ImageCL.clqueue_CPU, ImageCL.clprogram_CPU = \
-        ImageCL.setup_device("CPU")
-
-  def __init__(self, preferredDeviceType="CPU"):
-
-    ImageCL.setup()
+  def __init__(self, preferredDeviceType="GPU"):
 
     self.preferredDeviceType = preferredDeviceType
-
-    if preferredDeviceType == "GPU":
-      self.clcontext = ImageCL.clcontext_GPU
-      self.clqueue = ImageCL.clqueue_GPU
-      self.clprogram = ImageCL.clprogram_GPU
-    else:
-      self.clcontext = ImageCL.clcontext_CPU
-      self.clqueue = ImageCL.clqueue_CPU
-      self.clprogram = ImageCL.clprogram_CPU
 
     self.origin = [0.0, 0.0, 0.0]
     self.shape = [0, 0, 0]
@@ -98,10 +36,70 @@ class ImageCL:
     self.clsize = None
     self.clspacing = None
 
+    self.clcontext = None
+    self.clqueue = None
+    self.clprogram = None
+
   def __del__(self):
     self.clarray = None
     self.clsize = None
     self.clspacing = None
+
+  def setup(self):
+    """Setup CL context, queue, and program."""
+
+    if ImageCL.clSetupCache.has_key(tuple(self.shape)):
+
+      clTuple = ImageCL.clSetupCache[tuple(self.shape)]
+
+      self.clcontext = clTuple[0]
+      self.clqueue = clTuple[1]
+      self.clprogram = clTuple[2]
+
+      return
+
+    # Create cl context and queue
+    self.clcontext = None
+    for platform in cl.get_platforms():
+      for device in platform.get_devices():
+        if cl.device_type.to_string(device.type) == self.preferredDeviceType:
+          self.clcontext = cl.Context([device])
+          print ("Setting up CL device: %s" % cl.device_type.to_string(
+            device.type))
+          break;
+    if self.clcontext is None:
+      print "WARNING: using default CL context"
+      self.clcontext = cl.create_some_context()
+
+    self.clqueue = cl.CommandQueue(self.clcontext)
+
+    # Print CL device info
+    device = self.clcontext.devices[0]
+    print("Device name:", device.name)
+    print("Device type:", cl.device_type.to_string(device.type))
+    print("Device memory: ", device.global_mem_size//1024//1024, 'MB')
+    print("Device max clock speed:", device.max_clock_frequency, 'MHz')
+    print("Device compute units:", device.max_compute_units)
+
+    # Compile OpenCL code and create program object
+    sourcePath = os.path.dirname( os.path.realpath(__file__) )
+    clFileName = os.path.join(sourcePath, "ImageFunctions.cl.in")
+
+    fp = open(clFileName)
+    sourceTemplate = fp.read()
+    fp.close()
+
+    slices, rows, columns = self.shape
+    source = sourceTemplate % {
+      'slices' : slices,
+      'rows' : rows,
+      'columns' : columns,
+      }
+
+    self.clprogram = cl.Program(self.clcontext, source).build()
+
+    ImageCL.clSetupCache[tuple(self.shape)] = \
+      (self.clcontext, self.clqueue, self.clprogram)
 
   def clone_empty(self):
     """Clone self without filling in CL array data"""
@@ -116,6 +114,10 @@ class ImageCL:
     if self.clspacing is not None:
       outimgcl.clspacing = self.clspacing.copy()
 
+    outimgcl.clcontext = self.clcontext
+    outimgcl.clqueue = self.clqueue
+    outimgcl.clprogram = self.clprogram
+
     return outimgcl
 
   def clone(self):
@@ -123,6 +125,11 @@ class ImageCL:
     outimgcl = self.clone_empty()
     if self.clarray is not None:
       outimgcl.clarray = self.clarray.copy()
+
+    outimgcl.clcontext = self.clcontext
+    outimgcl.clqueue = self.clqueue
+    outimgcl.clprogram = self.clprogram
+
     return outimgcl
 
   def fromVolume(self, volume):
@@ -138,9 +145,13 @@ class ImageCL:
 
     self.shape = list(vtkimage.GetDimensions())
 
-    self.origin = list(volume.GetOrigin())
+    # Fix origin to zero for now
+    self.origin = [0, 0, 0]
+    #self.origin = list(volume.GetOrigin())
 
     self.spacing = list(volume.GetSpacing())
+
+    self.setup()
 
     # Store original orientation in case need to map back
     self.originalIJKToRAS = vtk.vtkMatrix4x4()
@@ -176,6 +187,8 @@ class ImageCL:
     #self.origin = list(origin)
     self.origin = [0, 0, 0]
     self.spacing = list(spacing)
+
+    self.setup()
 
     nspacing = n.zeros((3,), dtype=n.single)
     for dim in xrange(3):
@@ -382,7 +395,7 @@ class ImageCL:
 
     self.clprogram.gradient(self.clqueue, self.shape, None,
       self.clarray.data,
-      self.clsize.data, self.clspacing.data,
+      self.clspacing.data,
       gradx.clarray.data, grady.clarray.data, gradz.clarray.data).wait()
 
     return [gradx, grady, gradz]
@@ -405,14 +418,14 @@ class ImageCL:
     varx = n.single(sx * sx)
     widthx = n.int32(3 * sx)
     self.clprogram.gaussian_x(self.clqueue, self.shape, None,
-      tempclarray.data, self.clsize.data,
+      tempclarray.data,
       varx, widthx, outimgcl.clarray.data).wait()
 
     sy = sigma / self.spacing[1]
     vary = n.single(sx * sy)
     widthy = n.int32(3 * sy)
     self.clprogram.gaussian_y(self.clqueue, self.shape, None,
-      outimgcl.clarray.data, self.clsize.data,
+      outimgcl.clarray.data,
       vary, widthy,
       tempclarray.data).wait()
 
@@ -420,7 +433,7 @@ class ImageCL:
     varz = n.single(sx * sz)
     widthz = n.int32(3 * sz)
     self.clprogram.gaussian_z(self.clqueue, self.shape, None,
-      tempclarray.data, self.clsize.data,
+      tempclarray.data,
       varz, widthz,
       outimgcl.clarray.data).wait()
 
@@ -437,17 +450,17 @@ class ImageCL:
     sz = n.single(sigma / self.spacing[2])
     outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
       (sizeX, sizeY), None,
-      outimgcl.clarray.data, outimgcl.clsize.data, sz).wait()
+      outimgcl.clarray.data, sz).wait()
 
     sy = n.single(sigma / self.spacing[1])
     outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
       (sizeX, sizeZ), None,
-      outimgcl.clarray.data, outimgcl.clsize.data, sy).wait()
+      outimgcl.clarray.data, sy).wait()
 
     sx = n.single(sigma / self.spacing[0])
     outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
       (sizeY, sizeZ), None,
-      outimgcl.clarray.data, outimgcl.clsize.data, sx).wait()
+      outimgcl.clarray.data, sx).wait()
 
     return outimgcl
 
@@ -489,17 +502,16 @@ class ImageCL:
     hyclarray = cl.array.zeros_like(outimgcl.clarray)
     hzclarray = cl.array.zeros_like(outimgcl.clarray)
 
-    self.clprogram.identity(self.clqueue, targetShape, None,
-      outimgcl.clsize.data, outimgcl.clspacing.data,
+    outimgcl.clprogram.identity(outimgcl.clqueue, targetShape, None,
+      outimgcl.clspacing.data,
       hxclarray.data,  hyclarray.data, hzclarray.data).wait()
     
-    self.clprogram.interpolate(self.clqueue, targetShape, None,
+    outimgcl.clprogram.interpolate(outimgcl.clqueue, targetShape, None,
       #self.clarray.data,
       smoothimgcl.clarray.data,
       self.clsize.data, self.clspacing.data,
       hxclarray.data, hyclarray.data, hzclarray.data,
-      outimgcl.clarray.data,
-      outimgcl.clsize.data).wait()
+      outimgcl.clarray.data).wait()
 
     hxclarray = None
     hyclarray = None
@@ -534,5 +546,4 @@ class ImageCL:
       outimages[0].clarray.data,
       outimages[1].clarray.data,
       outimages[2].clarray.data,
-      clsize.data,
       clspacing.data).wait()
