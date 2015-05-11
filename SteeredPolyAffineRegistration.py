@@ -626,6 +626,8 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.movingImageCL.fromVolume(axialVolume)
     self.movingImageCL.normalize()
 
+    self.origMovingImageCL = self.movingImageCL
+
   def initOutputVolume(self, outputVolume):
     # NOTE: Reuse old result?
     # TODO: need to store old deformation for this to work, for now reset everything
@@ -769,17 +771,13 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registration iteration %d' %(self.registrationIterationNumber))
 
-    isCorrected = False
-
     self.polyAffine.optimize_step()
     
     if not self.actionQueue.empty():
       self.invoke_correction()
-      isCorrected = True
 
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
-      #self.outputImageCL = self.polyAffine.applyTo(self.origMovingImageCL)
       self.outputImageCL = self.polyAffine.movingCL
 
       self.updateOutputVolume(self.outputImageCL)
@@ -845,7 +843,10 @@ class SteeredPolyAffineRegistrationLogic(object):
     # Append user defined affine to polyaffine
     self.polyAffine.add_affine(A, T, x, rvec)
 
+    print "Added A", A, "T", T
+
     # TODO: reinitialize optimizer? Fix user affine?
+    self.polyAffine.optimize_setup()
 
   def processEvent(self,observee,event=None):
 

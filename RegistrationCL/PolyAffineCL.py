@@ -102,6 +102,9 @@ class PolyAffineCL:
     self.affines.append(A)
     self.translations.append(T)
 
+    self.movingCL = self.warp(self.origMovingCL,
+      self.affines, self.translations, self.centers)
+
   def optimize_setup(self):
     """Optimization setup, needs to be called before iterative calls to
     optimize_step."""
