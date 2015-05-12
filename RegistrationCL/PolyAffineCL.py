@@ -13,10 +13,7 @@
 # Author: Marcel Prastawa (marcel.prastawa@gmail.com)
 #
 
-
 # TODO:
-# - rewrite optimize() and add alternative allowing  user interruption at each
-#   step  (setup_optimizer() then repeated calls to step())
 # - use volume node / vtkimage as inputs, only convert blocks to ImageCL
 #   as needed, make sure it can handle big images
 # - anchor merging, blend two affines if anchors are close together
@@ -28,8 +25,6 @@ from DeformationCL import DeformationCL
 import pyopencl.array as cla
 
 import numpy
-
-import random
 
 
 class PolyAffineCL:
@@ -48,6 +43,8 @@ class PolyAffineCL:
     self.origin = numpy.array(self.fixedCL.origin, dtype=numpy.single)
 
     self.convergenceRatio = 1e-4
+
+    self.lineSearchIterations = 5
 
     # Optimizer state
     self.optimIter = 0
@@ -151,7 +148,7 @@ class PolyAffineCL:
       self.stepT = 2.0 / max_dT
 
     print "Line search trans"
-    for lineIter in range(20):
+    for lineIter in range(self.lineSearchIterations):
       print "opt line iter", lineIter
 
       TTestList = list(TList)
@@ -195,7 +192,7 @@ class PolyAffineCL:
       self.stepA = 0.2 / max_dA
 
     print "Line search affine"
-    for lineIter in range(20):
+    for lineIter in range(self.lineSearchIterations):
       print "opt line iter", lineIter
 
       ATestList = list(AList)
@@ -239,7 +236,7 @@ class PolyAffineCL:
       self.stepC = 2.0 / max_dC
 
     print "Line search anchor"
-    for lineIter in range(20):
+    for lineIter in range(self.lineSearchIterations):
       print "opt line iter", lineIter
 
       CTestList = list(CList)
@@ -599,12 +596,9 @@ class PolyAffineCL:
     Returns warped version of origMovingCL with current poly-affine parameters.
     """
 
-    #numTransforms = len(self.affines)
     numTransforms = len(AList)
 
     shape = self.fixedCL.shape
-
-    # TODO: use applyPolyAffine kernel in ImageFunctions.cl
 
     A = numpy.zeros((numTransforms, 3*3), numpy.single)
     C = numpy.zeros((numTransforms, 3), numpy.single)
@@ -634,105 +628,30 @@ class PolyAffineCL:
 
     return warpedImage
 
-    """
-    WSum = None
-    # TODO: compute sum of W for division
-    # save computed W's in a list, avoid it to save GPU memory?
-    #WList = []
-    for q in range(numTransforms):
-      C = self.centers[q]
-      r = self.radii[q]
-
-      W = self._gaussian(shape, C, r/2.0)
-      if q == 0:
-        WSum = W
-      else:
-        WSum = WSum.add(W)
-    WSum.shift(1e-8)
-    """
-
-    """
-    Coord = numpy.mgrid[0:shape[0], 0:shape[1], 0:shape[2]]
-
-    CoordCL = []
-    for d in range(3):
-      cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
-      CoordCL.append(cc)
-    """
-
-
-    """
-    # Slow version by creating dense deformation field
-    Phi = DeformationCL(self.fixedCL)
-    Phi.set_identity()
-
-    CoordCL = [Phi.hx, Phi.hy, Phi.hz]
-
-    CoordCL0 = list(CoordCL)
-
-    for q in range(numTransforms):
-      #A = self.affines[q]
-      #T = self.translations[q]
-      #C = self.centers[q]
-
-      A = AList[q]
-      T = TList[q]
-      C = CList[q]
-
-      r = self.radii[q]
-
-      W = self._gaussian(shape, C, r)
-      # W = W.divide(WSum)
-
-      WX = []
-      for d in range(3):
-        WX.append(W.multiply(CoordCL0[d]))
-
-      for d in range(3):
-        for j in range(3):
-          AWX = WX[j].clone()
-          AWX.scale(A[d,j])
-          CoordCL[d].add_inplace(AWX)
-          #CoordCL[d] = AWX
-        WT = W.clone()
-        WT.scale(T[d])
-        CoordCL[d].add_inplace(WT)
-
-    warpCL = DeformationCL(self.fixedCL)
-    warpCL.set_mapping(CoordCL[0], CoordCL[1], CoordCL[2])
-
-    return warpCL.applyTo(image)
-    """
-
-  # TODO: switch to CL kernels that compute weights
   def _gaussian(self, shape, center, radii):
-    """Returns ImageCL object of Gaussian"""
+    """Returns ImageCL object of Gaussian weights"""
+
+    weightsCL = ImageCL(self.fixedCL.preferredDeviceType)
+    temparr = numpy.zeros(shape, dtype=numpy.single)
+    weightsCL.fromArray(temparr, self.fixedCL.origin, self.fixedCL.spacing) 
+
+    clcenter = cla.to_device(weightsCL.clqueue,
+      numpy.array(center) )
+
+    clorigin = cla.to_device(weightsCL.clqueue,
+      numpy.array(self.fixedCL.origin) )
+
+    clradii = cla.to_device(weightsCL.clqueue, radii)
+
+    weightsCL.clprogram.weightsPolyAffine(
+      weightsCL.clqueue, shape, None,
+      clcenter.data, clradii.data,
+      weightsCL.clspacing.data, clorigin.data,
+      weightsCL.clarray.data)
+
+    return weightsCL
 
     """
-    sx = shape[0]
-    sy = shape[1]
-    sz = shape[2]
-
-    Coord = numpy.mgrid[0:sx, 0:sy, 0:sz]
-    #TODO: sync order with CL?
-    #Coord = numpy.mgrid[0:sz, 0:sy, 0:sx]
-    #Coord.reverse()
-    for d in range(3):
-      Coord[d] -= center[d]
-
-    #G = numpy.ones(shape, dtype=numpy.single)
-    G = numpy.zeros(shape, dtype=numpy.single)
-    for d in range(3):
-      G += (Coord[d] / radii[d]) ** 2.0
-    G = numpy.exp(-0.5 * G)
-    G /= numpy.max(G)
-    #G /= numpy.sum(G)
-
-    gaussianCL = ImageCL(self.fixedCL.preferredDeviceType)
-    gaussianCL.fromArray(G, self.fixedCL.origin, self.fixedCL.spacing)
-    """
-
     origin = numpy.array(center, dtype=numpy.single)
     for dim in range(3):
       origin[dim] -= radii[dim]
@@ -761,6 +680,7 @@ class PolyAffineCL:
     #gaussianCL.scale(1.0 / gaussianCL.sum())
 
     return gaussianCL
+    """
 
 """
   # Returns patches containing image momenta update
@@ -792,39 +712,6 @@ class PolyAffineCL:
 
     return moms
     
-
-  def apply(self, image):
-    # Create CL array containing centers, weights, matrices, translations
-
-    numAffines = n.uint32(len(self.centers))
-
-    centers_array = cl.array.zeros(image.clqueue, (numAffines,3), n.single)
-    widths_array = cl.array.zeros(image.clqueue, (numAffines,1), n.single)
-    matrices_array = cl.array.zeros(image.clqueue, (numAffines,9), n.single)
-    trans_array = cl.array.zeros(image.clqueue, (numAffines,3), n.single)
-
-    for i in xrange(numAffines):
-      centers_array[i,:] = self.centers[i]
-      widths_array[i,0] = self.widths[i]
-      # Matrix as list of list, convert to column vector
-      matrices_array[i,:] = \
-        [item for sublist in self.matrices[i] for item in sublist]
-      trans_array[i,:] = self.translations[i]
-
-    outimage = image.clone()
-
-    # Pass to kernel that handles deformation
-    image.clprogram.applyPolyAffine(
-      image.clqueue, image.shape, None,
-      centers_array.data, widths_array.data,
-      matrices_array.data, trans_array.data,
-      numAffines,
-      image.clarray.data,
-      outimage.clarray.data
-      ).wait()
-
-    return outimage
-
   # Move outside?
   def update_element(self, i, learning_rates):
     # Search radius

@@ -68,7 +68,7 @@ class SteeringScale(SteeringGeneric):
 
     for iter in xrange(20):
 
-      print "2D diff", Dnorm
+      #print "2D diff", Dnorm
 
       S = I * scale
       dS = I

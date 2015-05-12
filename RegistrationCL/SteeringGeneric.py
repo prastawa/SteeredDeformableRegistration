@@ -45,9 +45,9 @@ class SteeringGeneric:
     b = b / np.linalg.norm(b)
     c = np.cross(a, b)
 
-    print "Frame from "
-    print a
-    print b
+    #print "Frame from "
+    #print a
+    #print b
 
     f1 = a
     f2 = np.cross(a, c)

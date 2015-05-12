@@ -92,8 +92,6 @@ class ImageQuery:
     #Z = Z - np.mean(Z, axis=0)
     #Z = Z / np.std(Z, axis=0)
 
-    print "Z shape", Z.shape
-
     S = np.dot(Z.T, Z)
     #mu, S = fastmcd(Z)
 
@@ -132,7 +130,7 @@ class ImageQuery:
     obj = obj_ref
 
     for iter in range(20):
-      print "View obj", obj
+      #print "View obj", obj
 
       obj_prev = obj
 
@@ -184,9 +182,9 @@ class ImageQuery:
     b = b / np.linalg.norm(b)
     c = np.cross(a, b)
 
-    print "Frame from "
-    print a
-    print b
+    #print "Frame from "
+    #print a
+    #print b
 
     f1 = a
     f2 = np.cross(a, c)
@@ -334,8 +332,6 @@ class ImageQuery:
     def slider_callback(obj, event):
       # Get slider value
       alpha = obj.GetRepresentation().GetValue()
-
-      print "Slider value", alpha
 
       displayArray = fixedArray * alpha + movingArray * (1.0 - alpha)
 

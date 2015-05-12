@@ -770,11 +770,12 @@ class SteeredPolyAffineRegistrationLogic(object):
   
     self.registrationIterationNumber = self.registrationIterationNumber + 1
     #print('Registration iteration %d' %(self.registrationIterationNumber))
-
-    self.polyAffine.optimize_step()
     
+    #TODO: switch to while? clear queue immediately or do one at a time?
     if not self.actionQueue.empty():
       self.invoke_correction()
+
+    self.polyAffine.optimize_step()
 
     # Only upsample and redraw updated image every N iterations
     if self.registrationIterationNumber % self.drawIterations == 0:
@@ -812,6 +813,8 @@ class SteeredPolyAffineRegistrationLogic(object):
 
     actionItem = self.actionQueue.get()
 
+    #TODO: draw green circle representing current input on images?
+
     startRAS = actionItem[5]
     endRAS = actionItem[6]
 
@@ -821,19 +824,22 @@ class SteeredPolyAffineRegistrationLogic(object):
     x = np.zeros((3,), np.float32)
     y = np.zeros((3,), np.float32)
 
+    maxd = 2.0
     for d in range(3):
       x[d] = startIJK[d] * spacing[d]
       y[d] = endIJK[d] * spacing[d]
 
-    r = max(2.0, 1.5 * np.linalg.norm(x - y))
-    rvec = np.array((r, r, r))
+      maxd = max(maxd, 1.05*abs(x[d]-y[d]))
+
+    #r = np.ones((3,), np.float32) * maxd
+    r = np.ones((3,), np.float32) * max(2.0, 1.05 * np.linalg.norm(x - y))
 
     steerMode = actionItem[1]
 
     if steerMode == "rotate":
-      steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, rvec)
+      steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, r)
     elif steerMode == "scale":
-      steerer = SteeringScale(self.fixedImageCL, self.movingImageCL, x, rvec)
+      steerer = SteeringScale(self.fixedImageCL, self.movingImageCL, x, r)
     else:
       print "WARNING: unknown steering action"
       return
@@ -841,7 +847,7 @@ class SteeredPolyAffineRegistrationLogic(object):
     A, T = steerer.steer()
 
     # Append user defined affine to polyaffine
-    self.polyAffine.add_affine(A, T, x, rvec)
+    self.polyAffine.add_affine(A, T, x, r)
 
     print "Added A", A, "T", T
 
@@ -977,64 +983,27 @@ class SteeredPolyAffineRegistrationLogic(object):
             
         elif self.actionState == "steerStart":
 
-          #TODO: draw circle
-
           # Drawing a line that shows ROI
-          # TODO: add drawing of box on both fixed and moving views
           cursor = qt.QCursor(qt.Qt.ClosedHandCursor)
           app.setOverrideCursor(cursor)
 
           xy = style.GetInteractor().GetEventPosition()
 
-          coord = vtk.vtkCoordinate()
-          coord.SetCoordinateSystemToDisplay()
+          self.drawROI(style.GetInteractor(), self.steerStartXY, xy)
 
-          coord.SetValue(self.steerStartXY[0], self.steerStartXY[1], 0.0)
-          worldStartXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          coord.SetValue(xy[0], xy[1], 0.0)
-          worldXY = coord.GetComputedWorldValue(style.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer())
-
-          # TODO refactor code, one method for drawing collection of lines, one actor for all lines (moving + static ones)?
-
-          pts = vtk.vtkPoints()
-          pts.InsertNextPoint(worldStartXY)
-
-          vectors = vtk.vtkDoubleArray()
-          vectors.SetNumberOfComponents(3)
-          vectors.SetNumberOfTuples(1)
-          vectors.SetTuple3(0, worldXY[0]-worldStartXY[0], worldXY[1]-worldStartXY[1], worldXY[2]-worldStartXY[2]) 
-
-          pd = vtk.vtkPolyData()
-          pd.SetPoints(pts)
-          pd.GetPointData().SetVectors(vectors)
-
-          lineSource = vtk.vtkArrowSource()
-
-          self.movingArrowGlyph.SetInput(pd)
-          self.movingArrowGlyph.SetSource(lineSource.GetOutput())
-          self.movingArrowGlyph.ScalingOn()
-          self.movingArrowGlyph.OrientOn()
-          self.movingArrowGlyph.SetScaleFactor(1.0)
-          self.movingArrowGlyph.SetVectorModeToUseVector()
-          self.movingArrowGlyph.SetScaleModeToScaleByVector()
-          self.movingArrowGlyph.Update()
-      
-          self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
-      
-          self.movingArrowActor.SetMapper(self.movingArrowMapper)
-
-          renOverlay = self.getOverlayRenderer(
-            style.GetInteractor().GetRenderWindow() )
-          renOverlay.AddActor(self.movingArrowActor)
-
-          # TODO
+          # TODO: draw ROI on the fixed image as well?
           """
           otherSliceNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex-3, 'vtkMRMLSliceNode')
           otherSliceWidget = layoutManager.sliceWidget(otherSliceNode.GetLayoutName())
           otherSliceView = otherSliceWidget.sliceView()
           otherSliceStyle = otherSliceWidget.interactorStyle()
-          otherSliceStyle.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor2D(self.movingContourActor)
+
+          # TODO: reuse actor?
+          #self.drawROI(otherSliceStyle.GetInteractor(), self.steerStartXY, xy)
+          otherSliceStyle.GetInteractor().
+          renOverlay = self.getOverlayRenderer(
+            otherSliceStyle.GetInteractor().GetRenderWindow() )
+          renOverlay.AddActor(self.movingArrowActor)
           """
 
         else:
@@ -1069,6 +1038,72 @@ class SteeredPolyAffineRegistrationLogic(object):
       if cmd is not None:
         cmd.SetAbortFlag(1)
 
+  def drawROI(self, interactor, startXY, endXY):
+    coord = vtk.vtkCoordinate()
+    coord.SetCoordinateSystemToDisplay()
+
+    coord.SetValue(startXY[0], startXY[1], 0.0)
+    worldStartXY = coord.GetComputedWorldValue(interactor.GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+    coord.SetValue(endXY[0], endXY[1], 0.0)
+    worldEndXY = coord.GetComputedWorldValue(interactor.GetRenderWindow().GetRenderers().GetFirstRenderer())
+
+    pts = vtk.vtkPoints()
+    pts.InsertNextPoint(worldStartXY)
+
+    vectors = vtk.vtkDoubleArray()
+    vectors.SetNumberOfComponents(3)
+    vectors.SetNumberOfTuples(1)
+    vectors.SetTuple3(0, worldEndXY[0]-worldStartXY[0], worldEndXY[1]-worldStartXY[1], worldEndXY[2]-worldStartXY[2]) 
+
+    r = 0
+    for d in range(3):
+      r += (worldEndXY[d] - worldStartXY[d]) ** 2.0
+    r = math.sqrt(r)
+
+    radii = vtk.vtkFloatArray()
+    radii.InsertNextValue(r)
+    radii.SetName("radius")
+
+    pd = vtk.vtkPolyData()
+    pd.SetPoints(pts)
+    #pd.GetPointData().SetVectors(vectors)
+    #pd.GetPointData().AddArray(radii)
+    #pd.GetPointData().SetActiveScalars("radius")
+    pd.GetPointData().SetScalars(radii)
+
+    #lineSource = vtk.vtkArrowSource()
+
+    """
+    lineSource = vtk.vtkGlyphSource2D()
+    lineSource.SetGlyphTypeToCircle()
+    #lineSource.SetGlyphTypeToArrow()
+    lineSource.FilledOff()
+    lineSource.Update()
+    """
+
+    lineSource = vtk.vtkSphereSource()
+    lineSource.SetRadius(1.0)
+    lineSource.SetPhiResolution(12)
+    lineSource.SetThetaResolution(12)
+
+    self.movingArrowGlyph.SetInput(pd)
+    self.movingArrowGlyph.SetSource(lineSource.GetOutput())
+    self.movingArrowGlyph.ScalingOn()
+    self.movingArrowGlyph.OrientOn()
+    self.movingArrowGlyph.SetScaleFactor(1.0)
+    #self.movingArrowGlyph.SetVectorModeToUseVector()
+    #self.movingArrowGlyph.SetScaleModeToScaleByVector()
+    self.movingArrowGlyph.SetScaleModeToScaleByScalar()
+    self.movingArrowGlyph.Update()
+     
+    self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
+
+    self.movingArrowActor.SetMapper(self.movingArrowMapper)
+
+    renOverlay = self.getOverlayRenderer( interactor.GetRenderWindow() )
+    renOverlay.AddActor(self.movingArrowActor)
+
   def redrawSlices(self):
     # TODO: memory leak
 
@@ -1087,88 +1122,6 @@ class SteeredPolyAffineRegistrationLogic(object):
           
         renwin.Render()
         
-    """
-    #TODO: draw circles indicating correction region
-    # maybe draw different icons for rotation / scale
-    if not self.actionQueue.empty():
-    
-      numCircles = self.actionQueue.qsize()
-
-      # TODO:
-      # for i in range(numCircles):
-      #  actionTuple = self.actionQueue.queue[i]
-      # widget = actionTuple[2] # use renwin for that widget
-
-      # TODO renwin = lineTuple[1], need to maintain actors for each renwin?
-      renwin = self.lastDrawnSliceWidget.sliceView().renderWindow()
-
-      winsize = renwin.GetSize()
-      winsize = (float(winsize[0]), float(winsize[1]))
-
-      ren = renwin.GetRenderers().GetFirstRenderer()
-
-      coord = vtk.vtkCoordinate()
-      coord.SetCoordinateSystemToDisplay()
-    
-      pts = vtk.vtkPoints()
-      
-      vectors = vtk.vtkDoubleArray()
-      vectors.SetNumberOfComponents(3)
-      vectors.SetNumberOfTuples(numArrows)
-      
-      for i in xrange(numArrows):
-        lineTuple = self.lineQueue.queue[i]
-        sliceWidget = lineTuple[1]
-        startXY = lineTuple[2]
-        endXY = lineTuple[3]
-        startRAS = lineTuple[4]
-        endRAS = lineTuple[5]
-
-        coord.SetValue(startXY[0], startXY[1], 0.0)
-        worldStartXY = coord.GetComputedWorldValue(ren)
-        pts.InsertNextPoint(worldStartXY)
-
-        coord.SetValue(endXY[0], endXY[1], 0.0)
-        worldEndXY = coord.GetComputedWorldValue(ren)
-
-        if self.debugMessages:
-          print "startXY = " + str(startXY)
-          print "worldStartXY = " + str(worldStartXY)
-        
-        vectors.SetTuple3(i, (worldEndXY[0] - worldStartXY[0]), (worldEndXY[1] - worldStartXY[1]), 0.0)
-      
-      pd = vtk.vtkPolyData()
-      pd.SetPoints(pts)
-      pd.GetPointData().SetVectors(vectors)
-      
-      lineSource = vtk.vtkArrowSource()
-      #lineSource.SetTipLength(1.0 / winsize[0])
-      #lineSource.SetTipRadius(2.0 / winsize[0])
-      #lineSource.SetShaftRadius(1.0 / winsize[0])
-
-      self.linesGlyph.SetInput(pd)
-      self.linesGlyph.SetSource(lineSource.GetOutput())
-      self.linesGlyph.ScalingOn()
-      self.linesGlyph.OrientOn()
-      self.linesGlyph.SetScaleFactor(1.0)
-      self.linesGlyph.SetVectorModeToUseVector()
-      self.linesGlyph.SetScaleModeToScaleByVector()
-      self.linesGlyph.Update()
-      
-      self.linesMapper.SetInput(self.linesGlyph.GetOutput())
-      
-      self.linesActor.SetMapper(self.linesMapper)
-
-      # TODO add actors to the appropriate widgets (or all?)
-      # TODO make each renwin have two ren's from beginning?
-
-      renOverlay = self.getOverlayRenderer(renwin)
-
-      renOverlay.AddActor(self.linesActor)
-
-      renwin.Render()
-    """
-
   def getOverlayRenderer(self, renwin):
     rencol = renwin.GetRenderers()
       
