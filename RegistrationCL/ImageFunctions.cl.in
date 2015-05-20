@@ -624,7 +624,7 @@ __kernel void applyPolyAffine(
     //tp[dim] = 0;
     tp[dim] = p[dim];
 
-  float sumw = 0;
+  float sumw = 1e-10;
 
   for (uint i = 0; i < numAffines; i++)
   {
@@ -649,12 +649,13 @@ __kernel void applyPolyAffine(
       tp[dim] += w * translations[i*3 + dim];
   }
 
-  //float x = tp[0] / sumw / spacing[0];
-  //float y = tp[1] / sumw / spacing[1];
-  //float z = tp[2] / sumw / spacing[2];
-  float x = tp[0] / spacing[0];
-  float y = tp[1] / spacing[1];
-  float z = tp[2] / spacing[2];
+  //float x = (tp[0] - origin[0]) / spacing[0] / sumw;
+  //float y = (tp[1] - origin[1]) / spacing[1] / sumw;
+  //float z = (tp[2] - origin[2]) / spacing[2] / sumw;
+
+  float x = (tp[0] - origin[0]) / spacing[0];
+  float y = (tp[1] - origin[1]) / spacing[1];
+  float z = (tp[2] - origin[2]) / spacing[2];
 
   int x0 = convert_int(x);
   int y0 = convert_int(y);

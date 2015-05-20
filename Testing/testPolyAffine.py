@@ -36,11 +36,12 @@ movingCL.fromArray(movingArray, fixedImage.GetOrigin(), fixedImage.GetSpacing())
 
 polyAffine = PolyAffineCL(fixedCL, movingCL)
 polyAffine.create_identity(4)
-polyAffine.optimize(10)
+polyAffine.optimize(40)
 
 warpedCL = polyAffine.movingCL
 warpedArray = warpedCL.clarray.get().astype('float32')
 
+print "Writing warped image"
 warpedImage = sitk.GetImageFromArray(warpedArray)
 warpedImage.SetOrigin(fixedImage.GetOrigin())
 warpedImage.SetSpacing(fixedImage.GetSpacing())

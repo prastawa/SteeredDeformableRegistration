@@ -20,7 +20,10 @@ from RegistrationCL import (ImageCL, DeformationCL, PolyAffineCL,
 # TODO use image patch / compositing instead
 
 # TODO ???
-# At initialization, invoke affine registration using CLI module:
+# At initialization, invoke initial global affine registration using CLI module
+# so inputs can be at different spaces?
+# OR
+# Let users call this outside on their own, define workflow
 # self.parameters = {}
 # self.parameters['InitialTransform'] = initialTransform.GetID()
 # self.parameters['FixedImageFileName'] = fixedVolume.GetID()
@@ -554,15 +557,15 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.linesMapper = vtk.vtkPolyDataMapper()
     self.linesGlyph = vtk.vtkGlyph3D()
 
-    self.movingArrowActor = vtk.vtkActor()
-    self.movingArrowMapper = vtk.vtkPolyDataMapper()
-    self.movingArrowGlyph = vtk.vtkGlyph3D()
+    self.roiActor = vtk.vtkActor()
+    self.roiMapper = vtk.vtkPolyDataMapper()
+    self.roiGlyph = vtk.vtkGlyph3D()
 
     self.linesActor.GetProperty().SetOpacity(0.5)
     self.linesActor.GetProperty().SetColor([0.1, 0.8, 0.1])
 
-    self.movingArrowActor.GetProperty().SetOpacity(0.5)
-    self.movingArrowActor.GetProperty().SetColor([0.1, 0.1, 0.9])
+    self.roiActor.GetProperty().SetOpacity(0.5)
+    self.roiActor.GetProperty().SetColor([0.1, 0.1, 0.9])
 
     self.preferredDeviceType = "GPU"
     
@@ -951,7 +954,7 @@ class SteeredPolyAffineRegistrationLogic(object):
 
           renOverlay = self.getOverlayRenderer(
             style.GetInteractor().GetRenderWindow() )
-          renOverlay.RemoveActor(self.movingArrowActor)
+          renOverlay.RemoveActor(self.roiActor)
 
         self.actionState = "interacting"
         
@@ -1003,7 +1006,7 @@ class SteeredPolyAffineRegistrationLogic(object):
           otherSliceStyle.GetInteractor().
           renOverlay = self.getOverlayRenderer(
             otherSliceStyle.GetInteractor().GetRenderWindow() )
-          renOverlay.AddActor(self.movingArrowActor)
+          renOverlay.AddActor(self.roiActor)
           """
 
         else:
@@ -1087,22 +1090,22 @@ class SteeredPolyAffineRegistrationLogic(object):
     lineSource.SetPhiResolution(12)
     lineSource.SetThetaResolution(12)
 
-    self.movingArrowGlyph.SetInput(pd)
-    self.movingArrowGlyph.SetSource(lineSource.GetOutput())
-    self.movingArrowGlyph.ScalingOn()
-    self.movingArrowGlyph.OrientOn()
-    self.movingArrowGlyph.SetScaleFactor(1.0)
-    #self.movingArrowGlyph.SetVectorModeToUseVector()
-    #self.movingArrowGlyph.SetScaleModeToScaleByVector()
-    self.movingArrowGlyph.SetScaleModeToScaleByScalar()
-    self.movingArrowGlyph.Update()
+    self.roiGlyph.SetInput(pd)
+    self.roiGlyph.SetSource(lineSource.GetOutput())
+    self.roiGlyph.ScalingOn()
+    self.roiGlyph.OrientOn()
+    self.roiGlyph.SetScaleFactor(1.0)
+    #self.roiGlyph.SetVectorModeToUseVector()
+    #self.roiGlyph.SetScaleModeToScaleByVector()
+    self.roiGlyph.SetScaleModeToScaleByScalar()
+    self.roiGlyph.Update()
      
-    self.movingArrowMapper.SetInput(self.movingArrowGlyph.GetOutput())
+    self.roiMapper.SetInput(self.roiGlyph.GetOutput())
 
-    self.movingArrowActor.SetMapper(self.movingArrowMapper)
+    self.roiActor.SetMapper(self.roiMapper)
 
     renOverlay = self.getOverlayRenderer( interactor.GetRenderWindow() )
-    renOverlay.AddActor(self.movingArrowActor)
+    renOverlay.AddActor(self.roiActor)
 
   def redrawSlices(self):
     # TODO: memory leak

@@ -42,16 +42,20 @@ class PolyAffineCL:
 
     self.origin = numpy.array(self.fixedCL.origin, dtype=numpy.single)
 
+    self.sum_weights = None
+    self.weights = []
+
     self.convergenceRatio = 1e-4
 
     self.lineSearchIterations = 5
 
     # Optimizer state
     self.optimIter = 0
+    self.optimMode = 0
 
-    self.stepA = 1.0
-    self.stepT = 1.0
-    self.stepC = 1.0
+    self.stepA = -1.0
+    self.stepT = -1.0
+    self.stepC = -1.0
 
     self.refErrorL2 = 0.0
     self.currErrorL2 = 0.0
@@ -69,10 +73,12 @@ class PolyAffineCL:
 
     rad = numpy.ones((3,), dtype=numpy.single)
     for d in range(3):
-      rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1) * 1.25
+      rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1)
+      #rad[d] =  (shape[d]-1) * spacing[d] / (number_per_axis+1) * 1.5
 
     A0 = numpy.zeros((3,3), dtype=numpy.single)
     #A0 = numpy.eye(3, dtype=numpy.single)
+
     T0 = numpy.zeros((3,), dtype=numpy.single)
 
     for i in range(number_per_axis):
@@ -102,18 +108,24 @@ class PolyAffineCL:
     self.movingCL = self.warp(self.origMovingCL,
       self.affines, self.translations, self.centers)
 
+    # NOTE: need to reinitialize optimizer, either in here or outside
+    #self.optimize_setup()
+
   def optimize_setup(self):
     """Optimization setup, needs to be called before iterative calls to
     optimize_step."""
     self.optimIter = 0
+    self.optimMode = 0
 
     numTransforms = len(self.affines)
 
-    self.stepA = 1.0
-    self.stepT = 1.0
-    self.stepC = 1.0
+    self.stepA = -1.0
+    self.stepT = -1.0
+    self.stepC = -1.0
 
     self.prevErrorL2 = float('Inf')
+
+    self.compute_weights_and_sum()
 
     DiffFM = self.fixedCL.subtract(self.movingCL)
     DiffFMSq = DiffFM.multiply(DiffFM)
@@ -124,28 +136,73 @@ class PolyAffineCL:
     self.refErrorL2 = errorL2
     print "Ref diff", self.refErrorL2
 
+  def compute_weights_and_sum(self):
+
+    numTransforms = len(self.affines)
+
+    for w in self.weights:
+      del w
+    self.weights = []
+
+    del self.sum_weights
+
+    self.sum_weights = self.fixedCL.clone()
+    self.sum_weights.fill(1e-10)
+
+    for q in range(numTransforms):
+      C = self.centers[q]
+      r = self.radii[q]
+
+      W = self._get_weights(self.fixedCL.shape, C, r)
+
+      # Storing list of W will take up too much memory, store only ROI
+      #W_ROI = W.getROI(C, r)
+      #self.weights.append(W_ROI)
+
+      self.sum_weights.add_inplace(W)
+
   def optimize_step(self):
-    """Gradient descent update step, NOT thread safe."""
-
-    AList = self.affines
-    TList = self.translations
-
-    CList = self.centers
-
-    numTransforms = len(AList)
+    """
+    Gradient descent update step that alternates between parameters,
+    NOT thread safe.
+    """
 
     self.prevErrorL2 = self.currErrorL2
 
+    print "Mode", self.optimMode
+
     # Alternating gradient descent with adaptive step sizes
 
-    # Translation
+    if self.optimIter > 1 and (self.optimIter % 5) == 0:
+      self.optimize_anchors()
+      self.compute_weights_and_sum()
+    #TODO
+    #  self.optimize_radius()
+    #  self.compute_weights_and_sum()
+    else:
+      if self.optimMode == 0:
+        self.optimize_translations()
+      #elif self.optimMode == 1:
+      else:
+        self.optimize_affines()
+
+      self.optimMode = (self.optimMode + 1) % 3
+
+    self.optimIter += 1
+
+  def optimize_translations(self):
+
+    numTransforms = len(self.affines)
+
+    TList = self.translations
+
     dTList = self.gradient_translation()
 
-    if self.optimIter == 0:
+    if self.stepT < 0.0:
       max_dT = 1e-10
       for q in range(numTransforms):
         max_dT = max(numpy.max(numpy.abs(dTList[q])), max_dT)
-      self.stepT = 2.0 / max_dT
+      self.stepT = 5.0 / max_dT
 
     print "Line search trans"
     for lineIter in range(self.lineSearchIterations):
@@ -182,14 +239,19 @@ class PolyAffineCL:
       else:
         self.stepT *= 0.5
 
-    # Affine
+  def optimize_affines(self):
+
+    numTransforms = len(self.affines)
+
+    AList = self.affines
+
     dAList = self.gradient_affine()
 
-    if self.optimIter == 0:
+    if self.stepA < 0.0:
       max_dA = 1e-10
       for q in range(numTransforms):
         max_dA = max(numpy.max(numpy.abs(dAList[q])), max_dA)
-      self.stepA = 0.2 / max_dA
+      self.stepA = 0.5 / max_dA
 
     print "Line search affine"
     for lineIter in range(self.lineSearchIterations):
@@ -204,6 +266,9 @@ class PolyAffineCL:
       DiffFM = self.fixedCL.subtract(M)
       DiffFMSq = DiffFM.multiply(DiffFM)
       errorL2Test = DiffFMSq.sum()
+
+      del DiffFM
+      del DiffFMSq
 
       print "Test diff", errorL2Test
 
@@ -226,14 +291,19 @@ class PolyAffineCL:
       else:
         self.stepA *= 0.5
 
-    # Anchor positions
+  def optimize_anchors(self):
+
+    numTransforms = len(self.affines)
+
+    CList = self.centers
+
     dCList = self.gradient_anchor()
 
-    if self.optimIter == 0:
+    if self.stepC < 0.0:
       max_dC = 1e-10
       for q in range(numTransforms):
         max_dC = max(numpy.max(numpy.abs(dCList[q])), max_dC)
-      self.stepC = 2.0 / max_dC
+      self.stepC = 5.0 / max_dC
 
     print "Line search anchor"
     for lineIter in range(self.lineSearchIterations):
@@ -248,6 +318,9 @@ class PolyAffineCL:
       DiffFM = self.fixedCL.subtract(M)
       DiffFMSq = DiffFM.multiply(DiffFM)
       errorL2Test = DiffFMSq.sum()
+
+      del DiffFM
+      del DiffFMSq
 
       print "Test diff", errorL2Test
 
@@ -270,8 +343,6 @@ class PolyAffineCL:
       else:
         self.stepC *= 0.5
 
-    self.optimIter += 1
-
 
   def optimize(self, maxIters=10):
     """Offline optimization of polyaffine parameters using adaptive step
@@ -283,7 +354,8 @@ class PolyAffineCL:
       self.optimize_step()
 
       if abs(self.currErrorL2 - self.prevErrorL2) < self.convergenceRatio * abs(self.currErrorL2 - self.refErrorL2):
-        break
+        if self.optimMode == 0 and self.optimIter > 1:
+          break
 
       print "opt iter", iter, "steps", self.stepA, self.stepT, self.stepC
 
@@ -297,20 +369,6 @@ class PolyAffineCL:
 
     gradC_list = []
     gradR_list = []
-
-    """
-    sx = self.fixedCL.shape[0]
-    sy = self.fixedCL.shape[1]
-    sz = self.fixedCL.shape[2]
-
-    Coord = numpy.mgrid[0:sx, 0:sy, 0:sz]
-
-    CoordCL = []
-    for d in range(3):
-      cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
-      CoordCL.append(cc)
-    """
 
     Phi = DeformationCL(self.fixedCL)
     Phi.set_identity()
@@ -335,8 +393,12 @@ class PolyAffineCL:
       GList = M.gradient()
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
-      W = self._gaussian(F.shape, CF, r)
-      #W = self._gaussian(F.shape, C, r)
+
+      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      #W = self.weights[q]
+
+      W = self._get_weights(F.shape, CF, r)
+      #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
@@ -399,20 +461,6 @@ class PolyAffineCL:
 
     gradA_list = []
 
-    """
-    sx = self.fixedCL.shape[0]
-    sy = self.fixedCL.shape[1]
-    sz = self.fixedCL.shape[2]
-
-    Coord = numpy.mgrid[0:sx, 0:sy, 0:sz]
-
-    CoordCL = []
-    for d in range(3):
-      cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
-      CoordCL.append(cc)
-    """
-
     Phi = DeformationCL(self.fixedCL)
     Phi.set_identity()
 
@@ -436,8 +484,12 @@ class PolyAffineCL:
       GList = M.gradient()
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
-      W = self._gaussian(F.shape, CF, r)
-      #W = self._gaussian(F.shape, C, r)
+
+      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      #W = self.weights[q]
+
+      W = self._get_weights(F.shape, CF, r)
+      #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
@@ -458,20 +510,6 @@ class PolyAffineCL:
 
     gradT_list = []
 
-    """
-    sx = self.fixedCL.shape[0]
-    sy = self.fixedCL.shape[1]
-    sz = self.fixedCL.shape[2]
-
-    Coord = numpy.mgrid[0:sx, 0:sy, 0:sz]
-
-    CoordCL = []
-    for d in range(3):
-      cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
-      CoordCL.append(cc)
-    """
-
     Phi = DeformationCL(self.fixedCL)
     Phi.set_identity()
 
@@ -495,8 +533,12 @@ class PolyAffineCL:
       GList = M.gradient()
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
-      W = self._gaussian(F.shape, CF, r)
-      #W = self._gaussian(F.shape, C, r)
+
+      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      #W = self.weights[q]
+
+      W = self._get_weights(F.shape, CF, r)
+      #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
@@ -515,20 +557,6 @@ class PolyAffineCL:
 
     gradC_list = []
 
-    """
-    sx = self.fixedCL.shape[0]
-    sy = self.fixedCL.shape[1]
-    sz = self.fixedCL.shape[2]
-
-    Coord = numpy.mgrid[0:sx, 0:sy, 0:sz]
-
-    CoordCL = []
-    for d in range(3):
-      cc = ImageCL(self.fixedCL.preferredDeviceType)
-      cc.fromArray(Coord[d], self.fixedCL.origin, self.fixedCL.spacing)
-      CoordCL.append(cc)
-    """
-
     Phi = DeformationCL(self.fixedCL)
     Phi.set_identity()
 
@@ -552,15 +580,21 @@ class PolyAffineCL:
       GList = M.gradient()
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
-      W = self._gaussian(F.shape, CF, r)
-      #W = self._gaussian(F.shape, C, r)
+
+      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      #W = self.weights[q]
+
+      W = self._get_weights(F.shape, CF, r)
+      #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
 
       gradC = numpy.zeros((3,), dtype=numpy.single)
 
-      dot_AT_XC = F.clone()
-      dot_AT_XC.fill(0.0)
+      dot_G_XC = F.clone()
+      dot_G_XC.fill(0.0)
+
+      ATList = []
 
       for d in range(3):
         AT = F.clone()
@@ -571,14 +605,16 @@ class PolyAffineCL:
           AT.add_inplace(Y)
         AT.shift(T[d])
 
+        ATList.append(AT)
+
         XC = XList[d].clone()
         XC.shift(-C[d])
         XC.scale(2.0 / r[d]**2)
 
-        dot_AT_XC.add_inplace(AT.multiply(XC))
+        dot_G_XC.add_inplace(GList[d].multiply(XC))
 
       for d in range(3):
-        gradC[d] = -WD.multiply(GList[d].multiply(dot_AT_XC)).sum()
+        gradC[d] = -WD.multiply(ATList[d].multiply(dot_G_XC)).sum()
 
       gradC_list.append(gradC)
 
@@ -628,7 +664,7 @@ class PolyAffineCL:
 
     return warpedImage
 
-  def _gaussian(self, shape, center, radii):
+  def _get_weights(self, shape, center, radii):
     """Returns ImageCL object of Gaussian weights"""
 
     weightsCL = ImageCL(self.fixedCL.preferredDeviceType)
