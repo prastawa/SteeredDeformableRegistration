@@ -202,7 +202,7 @@ class PolyAffineCL:
       max_dT = 1e-10
       for q in range(numTransforms):
         max_dT = max(numpy.max(numpy.abs(dTList[q])), max_dT)
-      self.stepT = 5.0 / max_dT
+      self.stepT = 2.0 / max_dT
 
     print "Line search trans"
     for lineIter in range(self.lineSearchIterations):
@@ -251,7 +251,7 @@ class PolyAffineCL:
       max_dA = 1e-10
       for q in range(numTransforms):
         max_dA = max(numpy.max(numpy.abs(dAList[q])), max_dA)
-      self.stepA = 0.5 / max_dA
+      self.stepA = 0.1 / max_dA
 
     print "Line search affine"
     for lineIter in range(self.lineSearchIterations):
@@ -303,7 +303,7 @@ class PolyAffineCL:
       max_dC = 1e-10
       for q in range(numTransforms):
         max_dC = max(numpy.max(numpy.abs(dCList[q])), max_dC)
-      self.stepC = 5.0 / max_dC
+      self.stepC = 2.0 / max_dC
 
     print "Line search anchor"
     for lineIter in range(self.lineSearchIterations):

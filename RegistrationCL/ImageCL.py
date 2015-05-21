@@ -209,7 +209,7 @@ class ImageCL:
     # Convert radius to voxels
     voxrad = [1,1,1]
     for d in range(3):
-      voxrad[d] = radius[d] / self.spacing[d] * 1.5
+     voxrad[d] = radius[d] / self.spacing[d] * 1.2
 
     origin = self.origin
 

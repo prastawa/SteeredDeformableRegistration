@@ -3,6 +3,7 @@ import vtk, qt, ctk, slicer
 import math
 #import SimpleITK as sitk
 #import sitkUtils
+import os
 import Queue
 import time
 
@@ -334,9 +335,9 @@ class SteeredPolyAffineRegistrationWidget:
     if (os.getenv('USERNAME') == '212357326') or (os.getenv('USER') == 'prastawa'):
     #if False:
       self.logic.testingData()
-      self.fixedSelector.setCurrentNode(slicer.util.getNode('testbrain1'))
+      self.fixedSelector.setCurrentNode(slicer.util.getNode('blob_big'))
       # Disable anyway, in case checkbox clicked during execution
-      self.movingSelector.setCurrentNode(slicer.util.getNode('testbrain2'))
+      self.movingSelector.setCurrentNode(slicer.util.getNode('blob_small'))
       # self.transformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
       # self.initialTransformSelector.setCurrentNode(slicer.util.getNode('movingToFixed'))
 
@@ -508,7 +509,7 @@ class SteeredPolyAffineRegistrationLogic(object):
     self.timer = None
 
     # parameter defaults
-    self.numberAffines = 2
+    self.numberAffines = 1
     self.drawIterations = 1
     self.polyAffineRadius = 10.0
 
@@ -1154,21 +1155,21 @@ class SteeredPolyAffineRegistrationLogic(object):
     # w = slicer.modules.SteeredPolyAffineRegistrationWidget
     # w.fixedSelector.setCurrentNode(mrHead)
     # w.movingSelector.setCurrentNode(dtiBrain)
+
+    sourcePath = os.path.dirname(slicer.modules.steeredpolyaffineregistration.path)
     
-    if not slicer.util.getNodes('testbrain1*'):
-      import os
-      fileName = "C:\\Work\\testbrain1.nrrd"
+    if not slicer.util.getNodes('blob_big*'):
+      fileName = os.path.join(sourcePath, "Testing", "blob_big.mha")
       vl = slicer.modules.volumes.logic()
-      brain1Node = vl.AddArchetypeVolume(fileName, "testbrain1", 0)
+      brain1Node = vl.AddArchetypeVolume(fileName, "blob_big", 0)
     else:
-      nodes = slicer.util.getNodes('testbrain1.nrrd')
+      nodes = slicer.util.getNodes('blob_big.mha')
       brain1Node = nodes[0]
 
-    if not slicer.util.getNodes('testbrain2*'):
-      import os
-      fileName = "C:\\Work\\testbrain2.nrrd"
+    if not slicer.util.getNodes('blob_small*'):
+      fileName = os.path.join(sourcePath, "Testing", "blob_small.mha")
       vl = slicer.modules.volumes.logic()
-      brain2Node = vl.AddArchetypeVolume(fileName, "testbrain2", 0)
+      brain2Node = vl.AddArchetypeVolume(fileName, "blob_small", 0)
     #TODO else assign from list
 
     # if not slicer.util.getNodes('movingToFixed*'):
