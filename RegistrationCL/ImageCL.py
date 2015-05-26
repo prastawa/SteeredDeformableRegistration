@@ -393,7 +393,8 @@ class ImageCL:
     grady = self.clone()
     gradz = self.clone()
 
-    self.clprogram.gradient(self.clqueue, self.shape, None,
+    #self.clprogram.gradient_central(self.clqueue, self.shape, None,
+    self.clprogram.gradient_forward(self.clqueue, self.shape, None,
       self.clarray.data,
       self.clspacing.data,
       gradx.clarray.data, grady.clarray.data, gradz.clarray.data).wait()

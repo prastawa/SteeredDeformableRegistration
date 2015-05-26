@@ -305,7 +305,7 @@ __kernel void recursive_gaussian_z(
 // Gradient using central finite difference
 //
 
-__kernel void gradient(
+__kernel void gradient_central(
   __global float* src,
   __global float* spacing,
   __global float* dst_x,
@@ -345,6 +345,43 @@ __kernel void gradient(
   dst_x[offset] = 0.5 * (src[offset_b_x] - src[offset_a_x]) / spacing[0];
   dst_y[offset] = 0.5 * (src[offset_b_y] - src[offset_a_y]) / spacing[1];
   dst_z[offset] = 0.5 * (src[offset_b_z] - src[offset_a_z]) / spacing[2];
+}
+
+//
+// Gradient using forward finite difference
+//
+
+__kernel void gradient_forward(
+  __global float* src,
+  __global float* spacing,
+  __global float* dst_x,
+  __global float* dst_y,
+  __global float* dst_z)
+{
+  size_t column = get_global_id(2);
+  size_t row = get_global_id(1);
+  size_t slice = get_global_id(0);
+
+  if (slice >= SLICES || row >= ROWS || column >= COLUMNS)
+    return;
+
+  size_t slice_f = slice + 1;
+  size_t row_f = row + 1;
+  size_t column_f = column + 1;
+
+  if (slice_f >= SLICES) slice_f = SLICES - 1;
+  if (row_f >= ROWS) row_f = ROWS - 1;
+  if (column_f >= COLUMNS) column_f = COLUMNS - 1;
+
+  size_t offset = slice*ROWS*COLUMNS + row*COLUMNS + column;
+
+  size_t offset_fx = slice_f*ROWS*COLUMNS + row*COLUMNS + column;
+  size_t offset_fy = slice*ROWS*COLUMNS + row_f*COLUMNS + column;
+  size_t offset_fz = slice*ROWS*COLUMNS + row*COLUMNS + column_f;
+
+  dst_x[offset] = (src[offset_fx] - src[offset]) / spacing[0];
+  dst_y[offset] = (src[offset_fy] - src[offset]) / spacing[1];
+  dst_z[offset] = (src[offset_fz] - src[offset]) / spacing[2];
 }
 
 //

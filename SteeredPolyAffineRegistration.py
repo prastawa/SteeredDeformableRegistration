@@ -226,12 +226,14 @@ class SteeredPolyAffineRegistrationWidget:
 
     # Interaction mode
     steerModeLayout = qt.QGridLayout()
+    self.eraseModeRadio = qt.QRadioButton("Erase")
     self.rotateModeRadio = qt.QRadioButton("Rotate")
     self.scaleModeRadio = qt.QRadioButton("Scale")
-    steerModeLayout.addWidget(self.rotateModeRadio, 0, 0)
-    steerModeLayout.addWidget(self.scaleModeRadio, 0, 1)
+    steerModeLayout.addWidget(self.eraseModeRadio, 0, 0)
+    steerModeLayout.addWidget(self.rotateModeRadio, 0, 1)
+    steerModeLayout.addWidget(self.scaleModeRadio, 0, 2)
 
-    steerModeRadios = (self.scaleModeRadio, self.rotateModeRadio)
+    steerModeRadios = (self.eraseModeRadio, self.scaleModeRadio, self.rotateModeRadio)
     for r in steerModeRadios:
       r.connect('clicked(bool)', self.updateLogicFromGUI)
 
@@ -368,6 +370,8 @@ class SteeredPolyAffineRegistrationWidget:
 
     self.logic.debugMessages = self.debugButton.checked
 
+    if self.eraseModeRadio.checked:
+      self.logic.steerMode = "erase"
     if self.rotateModeRadio.checked:
       self.logic.steerMode = "rotate"
     if self.scaleModeRadio.checked:
@@ -839,6 +843,12 @@ class SteeredPolyAffineRegistrationLogic(object):
     r = np.ones((3,), np.float32) * max(2.0, 1.05 * np.linalg.norm(x - y))
 
     steerMode = actionItem[1]
+
+    if steerMode == "erase":
+      # TODO: list of added affines, user can select to undo specific ones
+      self.polyAffine.remove_affine(x, r[0])
+      self.polyAffine.optimize_setup()
+      return
 
     if steerMode == "rotate":
       steerer = SteeringRotation(self.fixedImageCL, self.movingImageCL, x, r)

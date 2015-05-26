@@ -111,6 +111,47 @@ class PolyAffineCL:
     # NOTE: need to reinitialize optimizer, either in here or outside
     #self.optimize_setup()
 
+  def remove_affine(self, C, dist):
+    """Erase affine transforms within a spherical ROI."""
+
+    numAffines = len(self.affines)
+
+    indices = []
+
+
+    """
+    # Erase all within ROI
+    for i in range(numAffines):
+      x = self.centers[i]
+
+      d = numpy.linalg.norm(x - C)
+
+      if d <= dist:
+        indices.append(i)
+    """
+
+    # Erase only the closest within ROI
+    mindist = dist
+    for i in range(numAffines):
+      x = self.centers[i]
+
+      d = numpy.linalg.norm(x - C)
+
+      if d <= mindist:
+        indices = [i]
+        mindist = d
+
+    print "Deleting affine components", indices
+
+    for k in sorted(indices, reverse=True):
+      del self.affines[k]
+      del self.translations[k]
+      del self.centers[k]
+      del self.radii[k]
+
+    self.movingCL = self.warp(self.origMovingCL,
+      self.affines, self.translations, self.centers)
+
   def optimize_setup(self):
     """Optimization setup, needs to be called before iterative calls to
     optimize_step."""
