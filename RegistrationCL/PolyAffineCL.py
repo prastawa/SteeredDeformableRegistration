@@ -197,10 +197,12 @@ class PolyAffineCL:
       W = self._get_weights(self.fixedCL.shape, C, r)
 
       # Storing list of W will take up too much memory, store only ROI
-      #W_ROI = W.getROI(C, r)
-      #self.weights.append(W_ROI)
+      W_ROI = W.getROI(C, r)
+      self.weights.append(W_ROI)
 
       self.sum_weights.add_inplace(W)
+
+      del W
 
   def optimize_step(self):
     """

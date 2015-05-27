@@ -16,12 +16,13 @@ import pyopencl as cl
 import pyopencl.array as cla
 import pyopencl.clmath as clmath
 
-import numpy as n
+import numpy as np
 
 import os
 
 class ImageCL:
 
+  # Cache of CL programs, with image size tuple as key
   clSetupCache = { }
 
   def __init__(self, preferredDeviceType="GPU"):
@@ -48,9 +49,10 @@ class ImageCL:
   def setup(self):
     """Setup CL context, queue, and program."""
 
-    if ImageCL.clSetupCache.has_key(tuple(self.shape)):
+    cacheKey = tuple(self.shape)
+    if ImageCL.clSetupCache.has_key(cacheKey):
 
-      clTuple = ImageCL.clSetupCache[tuple(self.shape)]
+      clTuple = ImageCL.clSetupCache[cacheKey]
 
       self.clcontext = clTuple[0]
       self.clqueue = clTuple[1]
@@ -74,6 +76,7 @@ class ImageCL:
     self.clqueue = cl.CommandQueue(self.clcontext)
 
     # Print CL device info
+    print "Created new CL context and program for image size", self.shape
     device = self.clcontext.devices[0]
     print("Device name:", device.name)
     print("Device type:", cl.device_type.to_string(device.type))
@@ -157,12 +160,12 @@ class ImageCL:
     self.originalIJKToRAS = vtk.vtkMatrix4x4()
     volume.GetIJKToRASDirectionMatrix(self.originalIJKToRAS)
 
-    nspacing = n.zeros((3,), dtype=n.single)
+    nspacing = np.zeros((3,), dtype=np.float32)
     for dim in xrange(3):
       nspacing[dim] = self.spacing[dim]
     self.clspacing = cla.to_device(self.clqueue, nspacing)
 
-    nsize = n.zeros((3,), dtype=n.uint32)
+    nsize = np.zeros((3,), dtype=np.uint32)
     for dim in xrange(3):
       nsize[dim] = self.shape[dim]
     self.clsize = cla.to_device(self.clqueue, nsize)
@@ -173,9 +176,9 @@ class ImageCL:
     narray = vtk.util.numpy_support.vtk_to_numpy(
         vtkimage.GetPointData().GetScalars()).reshape(reverse_shape)
         #vtkimage.GetPointData().GetScalars()).reshape(self.shape)
-    narray = n.asfortranarray(narray)
+    narray = np.asfortranarray(narray)
     narray = narray.transpose(2, 1, 0)
-    narray = narray.astype('single')
+    narray = narray.astype('float32')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
     vtkimage = None
@@ -190,17 +193,17 @@ class ImageCL:
 
     self.setup()
 
-    nspacing = n.zeros((3,), dtype=n.single)
+    nspacing = np.zeros((3,), dtype=np.float32)
     for dim in xrange(3):
       nspacing[dim] = self.spacing[dim]
     self.clspacing = cla.to_device(self.clqueue, nspacing)
 
-    nsize = n.zeros((3,), dtype=n.uint32)
+    nsize = np.zeros((3,), dtype=np.uint32)
     for dim in xrange(3):
       nsize[dim] = self.shape[dim]
     self.clsize = cla.to_device(self.clqueue, nsize)
 
-    narray = imarray.astype('single')
+    narray = imarray.astype('float32')
     self.clarray = cl.array.to_device(self.clqueue, narray)
 
   def getROI(self, center, radius):
@@ -248,14 +251,14 @@ class ImageCL:
     outimgcl = ImageCL(self.preferredDeviceType)
     outimgcl.fromArray(subarr, origin, self.spacing)
 
-    # TODO: allow recompositing
+    # TODO: store region info to allow recompositing?
     #return outimgcl, X0, X1
 
     return outimgcl
 
   def toVTKImage(self):
     """Returns vtkImageData containing image from GPU memory"""
-    narray = self.clarray.get().astype('single')
+    narray = self.clarray.get().astype('float32')
     narray = narray.transpose(2, 1, 0)
 
     vtkarray = vtk.util.numpy_support.numpy_to_vtk(narray.flatten(), deep=True)
@@ -299,8 +302,8 @@ class ImageCL:
 
     # NOTE: this may not work on Nvidia and Windows, due to space character
     # in header include location
-    # WORKAROUND: edit Slicer/lib/Python/Lib/site-packages/pyopencl/reduction.py
-    # and insert code from cl/pyopencl-complex.h manually
+    # WORKAROUND: edit Program Files/Slicer/lib/Python/Lib/site-packages/pyopencl/reduction.py
+    # insert code from cl/pyopencl-complex.h manually and comment include
     clminp = cl.array.min(self.clarray, self.clqueue)
     clmaxp = cl.array.max(self.clarray, self.clqueue)
     # Convert reductions to scalars
@@ -382,10 +385,11 @@ class ImageCL:
     return maxp
 
   def sum(self):
-    return self.clarray.get().sum()
-    #clsump = cl.array.sum(self.clarray, self.clqueue)
-    #sump = clsump.get()[()]
-    #return sump
+    #return self.clarray.get().sum()
+
+    clsump = cl.array.sum(self.clarray, np.float32, self.clqueue)
+    sump = clsump.get()[()]
+    return sump
 
   def gradient(self):
     """Returns list of gradients in x, y, and z"""
@@ -416,23 +420,23 @@ class ImageCL:
     tempclarray = outimgcl.clarray.copy()
 
     sx = sigma / self.spacing[0]
-    varx = n.single(sx * sx)
-    widthx = n.int32(3 * sx)
+    varx = np.float32(sx * sx)
+    widthx = np.int32(3 * sx)
     self.clprogram.gaussian_x(self.clqueue, self.shape, None,
       tempclarray.data,
       varx, widthx, outimgcl.clarray.data).wait()
 
     sy = sigma / self.spacing[1]
-    vary = n.single(sx * sy)
-    widthy = n.int32(3 * sy)
+    vary = np.float32(sx * sy)
+    widthy = np.int32(3 * sy)
     self.clprogram.gaussian_y(self.clqueue, self.shape, None,
       outimgcl.clarray.data,
       vary, widthy,
       tempclarray.data).wait()
 
     sz = sigma / self.spacing[2]
-    varz = n.single(sx * sz)
-    widthz = n.int32(3 * sz)
+    varz = np.float32(sx * sz)
+    widthz = np.int32(3 * sz)
     self.clprogram.gaussian_z(self.clqueue, self.shape, None,
       tempclarray.data,
       varz, widthz,
@@ -448,17 +452,17 @@ class ImageCL:
     sizeY = self.shape[1]
     sizeZ = self.shape[2]
 
-    sz = n.single(sigma / self.spacing[2])
+    sz = np.float32(sigma / self.spacing[2])
     outimgcl.clprogram.recursive_gaussian_z(outimgcl.clqueue,
       (sizeX, sizeY), None,
       outimgcl.clarray.data, sz).wait()
 
-    sy = n.single(sigma / self.spacing[1])
+    sy = np.float32(sigma / self.spacing[1])
     outimgcl.clprogram.recursive_gaussian_y(outimgcl.clqueue,
       (sizeX, sizeZ), None,
       outimgcl.clarray.data, sy).wait()
 
-    sx = n.single(sigma / self.spacing[0])
+    sx = np.float32(sigma / self.spacing[0])
     outimgcl.clprogram.recursive_gaussian_x(outimgcl.clqueue,
       (sizeY, sizeZ), None,
       outimgcl.clarray.data, sx).wait()
@@ -497,7 +501,7 @@ class ImageCL:
       outimgcl.clsize[dim] = targetShape[dim]
       outimgcl.clspacing[dim] = outimgcl.spacing[dim]
 
-    outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, n.single)
+    outimgcl.clarray = cl.array.zeros(self.clqueue, targetShape, np.float32)
 
     hxclarray = cl.array.zeros_like(outimgcl.clarray)
     hyclarray = cl.array.zeros_like(outimgcl.clarray)
@@ -537,7 +541,7 @@ class ImageCL:
     clvalueM = cl.array.to_device(clqueue, valueM)
     clsigmaM = cl.array.to_device(clqueue, sigmaM)
 
-    numV = n.uint32(posM.shape[0])
+    numV = np.uint32(posM.shape[0])
 
     clprogram.add_splat3(clqueue, shape, None,
       clposM.data,

@@ -1,7 +1,6 @@
 
-// TODO image origin spacing and orientation
-// How to store orientation matrix? pass it through device array? or pass it
-// through #def constants? more recompilations? is this OK?
+// Assumes that images have been reoriented to a identity (axial/RAI).
+// This is currently handled by the Python extension.
 
 #define SLICES %(slices)d
 #define ROWS %(rows)d
@@ -46,7 +45,7 @@ __kernel void gaussian_x(
   for (size_t pslice = slice0; pslice <= slice1; pslice++)
   {
     float d = convert_float(pslice) - fslice;
-    float g = exp(-0.5 * d*d / var);
+    float g = native_exp(-0.5 * d*d / var);
 
     size_t n_offset = pslice*ROWS*COLUMNS + row*COLUMNS + column;
     wv += src[n_offset] * g;
@@ -91,7 +90,7 @@ __kernel void gaussian_y(
   for (size_t prow = row0; prow <= row1; prow++)
   {
     float d = convert_float(prow) - frow;
-    float g = exp(-0.5 * d*d / var);
+    float g = native_exp(-0.5 * d*d / var);
 
     size_t n_offset = slice*ROWS*COLUMNS + prow*COLUMNS + column;
     wv += src[n_offset] * g;
@@ -136,7 +135,7 @@ __kernel void gaussian_z(
   for (size_t pcolumn = column0; pcolumn <= column1; pcolumn++)
   {
     float d = convert_float(pcolumn) - fcolumn;
-    float g = exp(-0.5 * d*d / var);
+    float g = native_exp(-0.5 * d*d / var);
 
     size_t n_offset = slice*ROWS*COLUMNS + row*COLUMNS + pcolumn;
     wv += src[n_offset] * g;
@@ -168,7 +167,7 @@ __kernel void recursive_gaussian_x(
   //float ssigma = sigma / spacing[0];
 
   float lambda = (sigma*sigma) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
-  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+  float nu = (1.0 + 2.0*lambda - native_sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
 
   float boundary = (1.0 / (1.0 - nu));
 
@@ -198,7 +197,7 @@ __kernel void recursive_gaussian_x(
   for (size_t slice = 0; slice < SLICES; slice++)
   {
     size_t pos = slice*ROWS*COLUMNS + sliceStart;
-    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
+    img[pos] *= native_powr(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -220,7 +219,7 @@ __kernel void recursive_gaussian_y(
   size_t rowEnd = slice*ROWS*COLUMNS + (ROWS-1)*COLUMNS + column;
 
   float lambda = (sigma*sigma) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
-  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+  float nu = (1.0 + 2.0*lambda - native_sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
 
   float boundary = (1.0 / (1.0 - nu));
 
@@ -249,7 +248,7 @@ __kernel void recursive_gaussian_y(
   for (size_t row = 0; row < ROWS; row++)
   {
     size_t pos = row*COLUMNS + rowStart;
-    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
+    img[pos] *= native_powr(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -268,7 +267,7 @@ __kernel void recursive_gaussian_z(
   size_t columnEnd = slice*ROWS*COLUMNS + row*COLUMNS + COLUMNS-1;
 
   float lambda = (sigma*sigma) / (2.0 * convert_float(NUM_GAUSSIAN_STEPS));
-  float nu = (1.0 + 2.0*lambda - sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
+  float nu = (1.0 + 2.0*lambda - native_sqrt(1.0 + 4.0*lambda)) / (2.0*lambda);
 
   float boundary = (1.0 / (1.0 - nu));
 
@@ -297,7 +296,7 @@ __kernel void recursive_gaussian_z(
   for (size_t column = 0; column < COLUMNS; column++)
   {
     size_t pos = column + columnStart;
-    img[pos] *= pow(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
+    img[pos] *= native_powr(nu / lambda, convert_float(NUM_GAUSSIAN_STEPS));
   }
 }
 
@@ -591,6 +590,10 @@ __kernel void add_splat3(
   }
 }
 
+//
+// Compute spatial weights of a polyaffine transform component
+//
+
 __kernel void weightsPolyAffine(
   __global float* center,
   __global float* width,
@@ -616,8 +619,8 @@ __kernel void weightsPolyAffine(
 
   float tp[3];
   for (uint dim = 0; dim < 3; dim++)
-    //tp[dim] = 0;
     tp[dim] = p[dim];
+    //tp[dim] = 0;
 
   float dist = 0;
   for (uint dim = 0; dim < 3; dim++)
@@ -626,8 +629,16 @@ __kernel void weightsPolyAffine(
     dist += d*d;
   }
 
-  dst[offset] = exp(-0.5 * dist);
+  float denom = 1.0;
+  //for (uint dim = 0; dim < 3; dim++)
+  //  denom *= native_sqrt(2.0 * M_PI) * width[dim];
+
+  dst[offset] = native_exp(-0.5 * dist) / denom;
 }
+
+//
+// Apply polyaffine mapping to a source image
+//
 
 __kernel void applyPolyAffine(
   __global float* centers,
@@ -658,8 +669,8 @@ __kernel void applyPolyAffine(
 
   float tp[3];
   for (uint dim = 0; dim < 3; dim++)
-    //tp[dim] = 0;
     tp[dim] = p[dim];
+    //tp[dim] = 0;
 
   float sumw = 1e-10;
 
@@ -672,7 +683,11 @@ __kernel void applyPolyAffine(
       dist += d*d;
     }
 
-    float w = exp(-0.5 * dist);
+    float denom = 1.0;
+    //for (uint dim = 0; dim < 3; dim++)
+    //  denom *= native_sqrt(2.0 * M_PI) * widths[i*3 + dim];
+
+    float w = native_exp(-0.5 * dist) / denom;
 
     sumw += w;
 
