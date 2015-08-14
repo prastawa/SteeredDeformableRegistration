@@ -45,6 +45,8 @@ class PolyAffineCL:
     self.sum_weights = None
     self.weights = []
 
+    self.normalizeWeights = False
+
     self.convergenceRatio = 1e-4
 
     self.lineSearchIterations = 5
@@ -105,6 +107,9 @@ class PolyAffineCL:
     self.affines.append(A)
     self.translations.append(T)
 
+    if self.normalizeWeights:
+      self.compute_weights_and_sum()
+
     self.movingCL = self.warp(self.origMovingCL,
       self.affines, self.translations, self.centers)
 
@@ -149,6 +154,9 @@ class PolyAffineCL:
       del self.centers[k]
       del self.radii[k]
 
+    if self.normalizeWeights:
+      self.compute_weights_and_sum()
+
     self.movingCL = self.warp(self.origMovingCL,
       self.affines, self.translations, self.centers)
 
@@ -166,7 +174,8 @@ class PolyAffineCL:
 
     self.prevErrorL2 = float('Inf')
 
-    self.compute_weights_and_sum()
+    if self.normalizeWeights:
+      self.compute_weights_and_sum()
 
     DiffFM = self.fixedCL.subtract(self.movingCL)
     DiffFMSq = DiffFM.multiply(DiffFM)
@@ -218,7 +227,8 @@ class PolyAffineCL:
 
     if self.optimIter > 1 and (self.optimIter % 5) == 0:
       self.optimize_anchors()
-      self.compute_weights_and_sum()
+      if self.normalizeWeights:
+        self.compute_weights_and_sum()
     #TODO
     #  self.optimize_radius()
     #  self.compute_weights_and_sum()
@@ -437,10 +447,12 @@ class PolyAffineCL:
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
 
-      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
-      #W = self.weights[q]
+      if self.normalizeWeights:
+        W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      else:
+        W = self._get_weights(F.shape, CF, r)
 
-      W = self._get_weights(F.shape, CF, r)
+      #W = self.weights[q]
       #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
@@ -528,10 +540,12 @@ class PolyAffineCL:
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
 
-      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
-      #W = self.weights[q]
+      if self.normalizeWeights:
+        W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      else:
+        W = self._get_weights(F.shape, CF, r)
 
-      W = self._get_weights(F.shape, CF, r)
+      #W = self.weights[q]
       #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
@@ -577,10 +591,12 @@ class PolyAffineCL:
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
 
-      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
-      #W = self.weights[q]
+      if self.normalizeWeights:
+        W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      else:
+        W = self._get_weights(F.shape, CF, r)
 
-      W = self._get_weights(F.shape, CF, r)
+      #W = self.weights[q]
       #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
@@ -624,10 +640,12 @@ class PolyAffineCL:
 
       CF = numpy.array(F.shape, dtype=numpy.single) / 2.0
 
-      #W = self.weights[q].divide(self.sum_weights.getROI(C, r))
-      #W = self.weights[q]
+      if self.normalizeWeights:
+        W = self.weights[q].divide(self.sum_weights.getROI(C, r))
+      else:
+        W = self._get_weights(F.shape, CF, r)
 
-      W = self._get_weights(F.shape, CF, r)
+      #W = self.weights[q]
       #W = self._get_weights(F.shape, C, r)
 
       WD = W.multiply(DiffFM)
